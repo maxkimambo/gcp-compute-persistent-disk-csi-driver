@@ -482,3 +482,23 @@ func TestSnapshotParameters(t *testing.T) {
 		})
 	}
 }
+func TestExtractModifyVolumeParameters(t *testing.T) {
+	parameters := map[string]string{
+		"iops":       "1000",
+		"throughput": "500",
+	}
+
+	expected := ModifyVolumeParameters{
+		IOPS:       1000,
+		Throughput: 500,
+	}
+
+	result, err := ExtractModifyVolumeParameters(parameters)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	if !reflect.DeepEqual(result, expected) {
+		t.Errorf("Expected: %v, but got: %v", expected, result)
+	}
+}
