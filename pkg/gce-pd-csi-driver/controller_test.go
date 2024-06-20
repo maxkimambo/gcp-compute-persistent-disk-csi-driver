@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -1711,6 +1712,83 @@ func TestMultiZoneVolumeCreationErrHandling(t *testing.T) {
 	}
 }
 
+func TestVolumeUpdateOperation(t *testing.T) {
+
+	testCases := []struct {
+		name          string
+		req           *csi.ControllerModifyVolumeRequest
+		expIops       int64
+		expThroughput int64
+		expErrMessage string
+	}{
+		{
+			name: "Update volume with valid parameters",
+			req: &csi.ControllerModifyVolumeRequest{
+				VolumeId:          testVolumeID,
+				MutableParameters: map[string]string{"iops": "20000", "throughput": "600"},
+			},
+			expIops:       20000,
+			expThroughput: 600,
+			expErrMessage: "",
+		},
+		{
+			name: "Update volume with invalid parameters",
+			req: &csi.ControllerModifyVolumeRequest{
+				VolumeId:          testVolumeID,
+				MutableParameters: map[string]string{"iops": "0", "throughput": "0"},
+			},
+			expIops:       10000,
+			expThroughput: 500,
+			expErrMessage: "no IOPS or Throughput specified for disk",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Logf("test case: %s", tc.name)
+
+		fcp, err := gce.CreateFakeCloudProvider(project, zone, nil)
+
+		if err != nil {
+			t.Fatalf("Failed to create mock cloud provider: %v", err)
+		}
+
+		gceDriver := initGCEDriverWithCloudProvider(t, fcp)
+		// Arrange
+		project, volKey, err := common.VolumeIDToKey(testVolumeID)
+		if err != nil {
+			t.Fatalf("Failed convert key: %v", err)
+		}
+
+		testDiskParams := &common.DiskParameters{
+			DiskType:                      "hyperdisk-balanced",
+			ProvisionedIOPSOnCreate:       10000,
+			ProvisionedThroughputOnCreate: 500,
+		}
+
+		err = fcp.InsertDisk(context.Background(), project, volKey, *testDiskParams, 20, nil, nil, "", "", false, "")
+		if err != nil {
+			t.Fatalf("Failed to insert disk: %v", err)
+		}
+		_, err = gceDriver.cs.ControllerModifyVolume(context.Background(), tc.req)
+
+		if err != nil && !strings.Contains(err.Error(), tc.expErrMessage) {
+			t.Errorf("Failed to modify volume: %v", err)
+		}
+
+		modifiedVol, err := fcp.GetDisk(context.Background(), project, volKey, gce.GCEAPIVersionBeta)
+
+		if err != nil {
+			t.Errorf("Failed to get volume: %v", err)
+		}
+
+		diskIops := modifiedVol.GetProvisionedIops()
+		throughput := modifiedVol.GetProvisionedThroughput()
+
+		if diskIops != tc.expIops && throughput != tc.expThroughput {
+			t.Errorf("Failed to modify volume: %v", err)
+		}
+	}
+}
 func TestListVolumePagination(t *testing.T) {
 	testCases := []struct {
 		name            string
