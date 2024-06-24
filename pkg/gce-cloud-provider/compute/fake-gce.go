@@ -279,6 +279,22 @@ func (cloud *FakeCloudProvider) InsertDisk(ctx context.Context, project string, 
 	return nil
 }
 
+func (cloud *FakeCloudProvider) UpdateDisk(ctx context.Context, project string, volKey *meta.Key, existingDisk *CloudDisk, params common.ModifyVolumeParameters) error {
+
+	if params.IOPS == 0 || params.Throughput == 0 {
+		return fmt.Errorf("no IOPS or Throughput specified for disk %v", existingDisk.GetSelfLink())
+	}
+
+	if _, ok := cloud.disks[volKey.String()]; ok {
+		existingDisk.betaDisk.ProvisionedIops = params.IOPS
+		existingDisk.betaDisk.ProvisionedThroughput = params.Throughput
+		cloud.disks[volKey.String()] = existingDisk
+		return nil
+	}
+
+	return fmt.Errorf("disk %v not found", volKey)
+}
+
 func (cloud *FakeCloudProvider) DeleteDisk(ctx context.Context, project string, volKey *meta.Key) error {
 	delete(cloud.disks, volKey.String())
 	return nil
