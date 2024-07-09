@@ -54,7 +54,9 @@ var (
 	gkeTestClusterPrefix = flag.String("gke-cluster-prefix", "pdcsi", "Prefix of GKE cluster names. A random suffix will be appended to form the full name.")
 	gkeTestClusterName   = flag.String("gke-cluster-name", "", "Name of existing cluster")
 	gkeNodeVersion       = flag.String("gke-node-version", "", "GKE cluster worker node version")
+	gkeIsAlpha           = flag.Bool("gke-is-alpha", false, "Deploy alpha GKE cluster")
 	isRegionalCluster    = flag.Bool("is-regional-cluster", false, "tell the test that a regional cluster is being used. Should be used for running on an existing regional cluster (ie, --bringup-cluster=false). The test will fail if a zonal GKE cluster is created when this flag is true")
+	machineType          = flag.String("machine-type", "n1-standard-2", "machine type to use for the cluster")
 
 	// Test infrastructure flags
 	boskosResourceType = flag.String("boskos-resource-type", "gce-project", "name of the boskos resource type to reserve")
@@ -366,7 +368,7 @@ func handle() error {
 		case "gce":
 			err = clusterUpGCE(testParams.k8sSourceDir, *gceZone, *numNodes, *numWindowsNodes, testParams.imageType)
 		case "gke":
-			err = clusterUpGKE(*gceZone, *gceRegion, *numNodes, *numWindowsNodes, testParams.imageType, testParams.useGKEManagedDriver)
+			err = clusterUpGKE(*gceZone, *gceRegion, *numNodes, *numWindowsNodes, *machineType, *gkeIsAlpha, testParams.imageType, testParams.useGKEManagedDriver)
 		default:
 			err = fmt.Errorf("deployment-strategy must be set to 'gce' or 'gke', but is: %s", testParams.deploymentStrategy)
 		}

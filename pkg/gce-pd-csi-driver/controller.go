@@ -331,17 +331,21 @@ func (gceCS *GCEControllerServer) createVolumeInternal(ctx context.Context, req 
 	// https://github.com/container-storage-interface/spec/blob/master/spec.md#createvolume
 	// mutable_parameters MUST take precedence over the values from parameters.
 	mutableParams := req.GetMutableParameters()
+
+	klog.V(4).Infof("CreateVolume parameters: %v", params)
+	klog.V(4).Infof("CreateVolume mutable parameters: %v", mutableParams)
+	klog.V(4).Infof("CreateVolume disk type: %v", diskTypeForMetric)
 	// If the disk type is pd-*, the IOPS and Throughput parameters are ignored.
-	if mutableParams != nil && !strings.HasPrefix(params.DiskType, "pd") {
-		p, err := common.ExtractModifyVolumeParameters(mutableParams)
-		if err != nil {
-			return nil, status.Errorf(codes.InvalidArgument, "Invalid mutable parameters: %v", err)
-		}
-		params.ProvisionedIOPSOnCreate = p.IOPS
-		params.ProvisionedThroughputOnCreate = p.Throughput
-	} else {
-		klog.V(4).Infof("Ignoring IOPS and throughput parameters for unsupported disk type %s", params.DiskType)
-	}
+	// if !strings.HasPrefix(params.DiskType, "pd-") {
+	// 	p, err := common.ExtractModifyVolumeParameters(mutableParams)
+	// 	if err != nil {
+	// 		return nil, status.Errorf(codes.InvalidArgument, "Invalid mutable parameters: %v", err)
+	// 	}
+	// 	params.ProvisionedIOPSOnCreate = p.IOPS
+	// 	params.ProvisionedThroughputOnCreate = p.Throughput
+	// } else {
+	// 	klog.V(4).Infof("Ignoring IOPS and throughput parameters for unsupported disk type %s", params.DiskType)
+	// }
 
 	if _, err := getMultiWriterFromCapabilities(volumeCapabilities); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "VolumeCapabilities is invalid: %v", err.Error())
@@ -754,6 +758,7 @@ func (gceCS *GCEControllerServer) ControllerModifyVolume(ctx context.Context, re
 	}
 
 	volumeModifyParams, err := common.ExtractModifyVolumeParameters(req.GetMutableParameters())
+	klog.V(4).Info("Volume Modify Parameters: ", volumeModifyParams)
 	if err != nil {
 		klog.Errorf("Failed to extract parameters for volume %s: %v", volumeID, err)
 		return nil, status.Errorf(codes.InvalidArgument, "Invalid parameters: %v", err)
