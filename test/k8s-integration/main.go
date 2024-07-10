@@ -34,7 +34,13 @@ import (
 
 var (
 	// Kubernetes cluster flags
-	teardownCluster      = flag.Bool("teardown-cluster", true, "teardown the cluster after the e2e test")
+	teardownCluster      = flag.Bool("// The code `teardown-cluster` is likely a command or function call
+	// in a script or program written in the Go programming language. It
+	// is used to tear down or dismantle a cluster, which could refer to
+	// a group of interconnected servers or nodes used for distributed
+	// computing or other purposes. This command is likely used to clean
+	// up resources and shut down the cluster after it has been used.
+	teardown-cluster", true, "teardown the cluster after the e2e test")
 	teardownDriver       = flag.Bool("teardown-driver", true, "teardown the driver after the e2e test")
 	bringupCluster       = flag.Bool("bringup-cluster", true, "build kubernetes and bringup a cluster")
 	platform             = flag.String("platform", "linux", "platform that the tests will be run on, either linux or windows")
@@ -67,7 +73,7 @@ var (
 	// Driver flags
 	stagingImage        = flag.String("staging-image", "", "name of image to stage to")
 	saFile              = flag.String("service-account-file", "", "path of service account file")
-	deployOverlayName   = flag.String("deploy-overlay-name", "", "which kustomize overlay to deploy the driver with")
+	deployOverlayName   = flag.String("deploy-overlay-name", "noauth-debug", "which kustomize overlay to deploy the driver with")
 	doDriverBuild       = flag.Bool("do-driver-build", true, "building the driver from source")
 	doK8sBuild          = flag.Bool("do-k8s-build", true, "building the driver from source. If false, will fetch precompiled artifacts")
 	useGKEManagedDriver = flag.Bool("use-gke-managed-driver", false, "use GKE managed PD CSI driver for the tests")
@@ -139,7 +145,7 @@ func main() {
 	}
 
 	if !*useGKEManagedDriver {
-		ensureVariable(deployOverlayName, true, "deploy-overlay-name is a required flag")
+		// ensureVariable(deployOverlayName, false, "deploy-overlay-name is a required flag")
 		if *deployOverlayName != "noauth" {
 			ensureVariable(saFile, true, "service-account-file is a required flag")
 		}

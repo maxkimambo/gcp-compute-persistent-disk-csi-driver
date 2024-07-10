@@ -335,17 +335,18 @@ func (gceCS *GCEControllerServer) createVolumeInternal(ctx context.Context, req 
 	klog.V(4).Infof("CreateVolume parameters: %v", params)
 	klog.V(4).Infof("CreateVolume mutable parameters: %v", mutableParams)
 	klog.V(4).Infof("CreateVolume disk type: %v", diskTypeForMetric)
+	
 	// If the disk type is pd-*, the IOPS and Throughput parameters are ignored.
-	// if !strings.HasPrefix(params.DiskType, "pd-") {
-	// 	p, err := common.ExtractModifyVolumeParameters(mutableParams)
-	// 	if err != nil {
-	// 		return nil, status.Errorf(codes.InvalidArgument, "Invalid mutable parameters: %v", err)
-	// 	}
-	// 	params.ProvisionedIOPSOnCreate = p.IOPS
-	// 	params.ProvisionedThroughputOnCreate = p.Throughput
-	// } else {
-	// 	klog.V(4).Infof("Ignoring IOPS and throughput parameters for unsupported disk type %s", params.DiskType)
-	// }
+	if !strings.HasPrefix(params.DiskType, "pd-") {
+		p, err := common.ExtractModifyVolumeParameters(mutableParams)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "Invalid mutable parameters: %v", err)
+		}
+		params.ProvisionedIOPSOnCreate = p.IOPS
+		params.ProvisionedThroughputOnCreate = p.Throughput
+	} else {
+		klog.V(4).Infof("Ignoring IOPS and throughput parameters for unsupported disk type %s", params.DiskType)
+	}
 
 	if _, err := getMultiWriterFromCapabilities(volumeCapabilities); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "VolumeCapabilities is invalid: %v", err.Error())

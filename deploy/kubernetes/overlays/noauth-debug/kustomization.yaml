@@ -13,4 +13,4 @@ namespace: gce-pd-csi-driver
 images:
 - name: gke.gcr.io/gcp-compute-persistent-disk-csi-driver
   newName: europe-west3-docker.pkg.dev/kimambo-sandbox/csi-dev/gce-pd-csi-driver
-  newTag: dev_linux
+  newTag: c146afb5-51ba-4ff8-b6c9-dfeb74607e04

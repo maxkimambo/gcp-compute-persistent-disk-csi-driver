@@ -191,6 +191,8 @@ func clusterUpGKE(gceZone, gceRegion string, numNodes int, numWindowsNodes int, 
 		// prepend beta to be used with gcloud beta container clusters create
 		cmdParams = slices.Insert(cmdParams, 0, "beta")
 		cmdParams = append(cmdParams, "--enable-kubernetes-alpha")
+		cmdParams = append(cmdParams, "--no-enable-autoupgrade")
+		cmdParams = append(cmdParams, "--no-enable-autorepair")
 	}
 	if isVariableSet(gkeClusterVer) {
 		cmdParams = append(cmdParams, "--cluster-version", *gkeClusterVer)
