@@ -1711,8 +1711,59 @@ func TestMultiZoneVolumeCreationErrHandling(t *testing.T) {
 		}
 	}
 }
+func TestCreateVolumeWithVolumeAttributeClassParameters(t *testing.T) {
+	// When volume attribute class specifies iops / throughput they should take precedence over storage class parameters
+	var d []*gce.CloudDisk
+	fcp, err := gce.CreateFakeCloudProvider(project, zone, d)
+	gceDriver := initGCEDriverWithCloudProvider(t, fcp)
 
-func TestVolumeUpdateOperation(t *testing.T) {
+	if err != nil {
+		t.Fatalf("Failed to create fake cloud provider: %v", err)
+	}
+
+	createVolReq := &csi.CreateVolumeRequest{
+		Name:          "test-name",
+		CapacityRange: stdCapRange,
+		VolumeCapabilities: []*csi.VolumeCapability{
+			{
+				AccessType: &csi.VolumeCapability_Mount{
+					Mount: &csi.VolumeCapability_MountVolume{},
+				},
+				AccessMode: &csi.VolumeCapability_AccessMode{
+					Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+				},
+			},
+		},
+		Parameters: map[string]string{
+			common.ParameterKeyType:                          "hyperdisk-balanced",
+			common.ParameterKeyProvisionedIOPSOnCreate:       "10000",
+			common.ParameterKeyProvisionedThroughputOnCreate: "500",
+		},
+		MutableParameters: map[string]string{"iops": "20000", "throughput": "600"},
+	}
+
+	_, err = gceDriver.cs.CreateVolume(context.Background(), createVolReq)
+	if err != nil {
+		t.Fatalf("Failed to create volume: %v", err)
+	}
+
+	volumeKey := meta.ZonalKey(name, zone)
+	disk, err := fcp.GetDisk(context.Background(), project, volumeKey, gce.GCEAPIVersionBeta)
+
+	if err != nil {
+		t.Fatalf("Failed to get disk: %v", err)
+	}
+	if disk != nil {
+		if disk.GetProvisionedIops() != 20000 {
+			t.Errorf("Expected IOPS to be 20000, got: %v", disk.GetProvisionedIops())
+		}
+		if disk.GetProvisionedThroughput() != 600 {
+			t.Errorf("Expected Throughput to be 600, got: %v", disk.GetProvisionedThroughput())
+		}
+	}
+
+}
+func TestVolumeModifyOperation(t *testing.T) {
 
 	testCases := []struct {
 		name          string
