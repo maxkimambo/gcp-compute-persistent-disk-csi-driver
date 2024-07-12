@@ -785,7 +785,7 @@ func (gceCS *GCEControllerServer) ControllerModifyVolume(ctx context.Context, re
 	diskType = existingDisk.GetPDType()
 
 	if !diskSupportsIopsAndThroughput[diskType] {
-		return nil, status.Errorf(codes.InvalidArgument, "ModifyVolume is not supported for disk type %s", diskType)
+		return nil, status.Errorf(codes.InvalidArgument, "Failed to modify volume: modifications not supported for disk type %s", diskType)
 	}
 
 	// TODO : not sure how this metric should be reported
