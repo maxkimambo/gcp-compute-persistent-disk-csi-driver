@@ -201,7 +201,17 @@ const (
 
 var (
 	validResourceApiVersions = map[string]bool{"v1": true, "alpha": true, "beta": true, "staging_v1": true, "staging_beta": true, "staging_alpha": true}
-
+	// disk types that support IOPS and Throughput parameters setting / modifications
+	diskSupportsIopsAndThroughput = map[string]bool{
+		"pd-balanced":          false,
+		"pd-standard":          false,
+		"pd-ssd":               false,
+		"pd-extreme":           true,
+		"hyperdisk-ml":         true,
+		"hyperdisk-balanced":   true,
+		"hyperdisk-throughput": true,
+		"hyperdisk-extreme":    true,
+	}
 	// By default GCE returns a lot of data for each instance. Request only a subset of the fields.
 	listInstancesFields = []googleapi.Field{
 		"items/disks/deviceName",
@@ -328,11 +338,25 @@ func (gceCS *GCEControllerServer) createVolumeInternal(ctx context.Context, req 
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "failed to extract parameters: %v", err.Error())
 	}
-	// Validate multiwriter
+	// https://github.com/container-storage-interface/spec/blob/master/spec.md#createvolume
+	// mutable_parameters MUST take precedence over the values from parameters.
+	mutableParams := req.GetMutableParameters()
+	// If the disk type is pd-balanced, pd-ssd, pd-standard except for pd-extreme,
+	// the IOPS and Throughput parameters are ignored.
+	if diskSupportsIopsAndThroughput[params.DiskType] && len(mutableParams) > 0 {
+		p, err := common.ExtractModifyVolumeParameters(mutableParams)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "Invalid mutable parameters: %v", err)
+		}
+		params.ProvisionedIOPSOnCreate = p.IOPS
+		params.ProvisionedThroughputOnCreate = p.Throughput
+	} else {
+		klog.V(4).Infof("Ignoring IOPS and throughput parameters for unsupported disk type %s", params.DiskType)
+	}
+
 	if _, err := getMultiWriterFromCapabilities(volumeCapabilities); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "VolumeCapabilities is invalid: %v", err.Error())
 	}
-
 	err = validateStoragePools(req, params, gceCS.CloudProvider.GetDefaultProject())
 	if err != nil {
 		// Reassign error so that all errors are reported as InvalidArgument to RecordOperationErrorMetrics.
@@ -714,6 +738,70 @@ func (gceCS *GCEControllerServer) createSingleDisk(ctx context.Context, req *csi
 
 	klog.V(4).Infof("CreateVolume succeeded for disk %v", volKey)
 	return disk, nil
+}
+
+func (gceCS *GCEControllerServer) ControllerModifyVolume(ctx context.Context, req *csi.ControllerModifyVolumeRequest) (*csi.ControllerModifyVolumeResponse, error) {
+	var err error
+
+	volumeID := req.GetVolumeId()
+	klog.V(4).Infof("Modifying Volume ID: %s", volumeID)
+
+	if volumeID == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume ID must be provided")
+	}
+
+	diskType := metrics.DefaultDiskTypeForMetric
+	enableConfidentialCompute := metrics.DefaultEnableConfidentialCompute
+	enableStoragePools := metrics.DefaultEnableStoragePools
+
+	defer func() {
+		gceCS.Metrics.RecordOperationErrorMetrics("ModifyVolume", err, diskType, enableConfidentialCompute, enableStoragePools)
+	}()
+
+	project, volKey, err := common.VolumeIDToKey(volumeID)
+
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "volume ID is invalid: %v", err.Error())
+	}
+
+	volumeModifyParams, err := common.ExtractModifyVolumeParameters(req.GetMutableParameters())
+	klog.V(4).Info("Volume Modify Parameters: ", volumeModifyParams)
+	if err != nil {
+		klog.Errorf("Failed to extract parameters for volume %s: %v", volumeID, err)
+		return nil, status.Errorf(codes.InvalidArgument, "Invalid parameters: %v", err)
+	}
+	klog.V(4).Infof("Modify Volume Parameters for %s: %v", volumeID, volumeModifyParams)
+
+	existingDisk, err := gceCS.CloudProvider.GetDisk(ctx, project, volKey, gce.GCEAPIVersionBeta)
+
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "failed to get volume: %v", err)
+	}
+
+	if existingDisk == nil || existingDisk.GetSelfLink() == "" {
+
+		return nil, status.Errorf(codes.Internal, "failed to get volume : %s", volumeID)
+	}
+	diskType = existingDisk.GetPDType()
+
+	if !diskSupportsIopsAndThroughput[diskType] {
+		return nil, status.Errorf(codes.InvalidArgument, "Failed to modify volume: modifications not supported for disk type %s", diskType)
+	}
+
+	// TODO : not sure how this metric should be reported
+	if existingDisk.GetEnableStoragePools() {
+		enableStoragePools = "enabled"
+	} else {
+		enableStoragePools = "disabled"
+	}
+
+	err = gceCS.CloudProvider.UpdateDisk(ctx, project, volKey, existingDisk, volumeModifyParams)
+	if err != nil {
+		klog.Errorf("Failed to modify volume %s: %v", volumeID, err)
+		return nil, status.Errorf(codes.Internal, "Failed to modify volume %s: %v", volumeID, err)
+	}
+
+	return &csi.ControllerModifyVolumeResponse{}, nil
 }
 
 func (gceCS *GCEControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {

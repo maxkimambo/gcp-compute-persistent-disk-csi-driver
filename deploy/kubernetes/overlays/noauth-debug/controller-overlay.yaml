@@ -8,6 +8,7 @@ metadata:
 spec:
   template:
     spec:
+      
       containers:
         - name: gce-pd-driver
           imagePullPolicy: Always
@@ -31,4 +32,37 @@ spec:
             capabilities:
               add:
               - SYS_PTRACE
+
+        - name: csi-provisioner
+          image: gcr.io/k8s-staging-sig-storage/csi-provisioner:canary
+          args:
+            - "--v=5"
+            - "--csi-address=/csi/csi.sock"
+            - "--feature-gates=Topology=true"
+            - "--http-endpoint=:22011"
+            - "--leader-election-namespace=$(PDCSI_NAMESPACE)"
+            - "--timeout=250s"
+            - "--extra-create-metadata"
+          # - "--run-controller-service=false"  # disable the controller service of the CSI driver
+          # - "--run-node-service=false"        # disable the node service of the CSI driver
+            - "--leader-election"
+            - "--default-fstype=ext4"
+            - "--controller-publish-readonly=true"
+            - "--feature-gates=VolumeAttributesClass=true"
+
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer
+          imagePullPolicy: Always
+          args:
+            - "--v=5"
+            - "--csi-address=/csi/csi.sock"
+            - "--http-endpoint=:22013"
+            - "--leader-election"
+            - "--leader-election-namespace=$(PDCSI_NAMESPACE)"
+            - "--handle-volume-inuse-error=false"
+            - "--feature-gates=VolumeAttributesClass=true"
+      
+      # used with vanilla K8s 
+      # imagePullSecrets:
+      #   - name: artifactory-cred
 
