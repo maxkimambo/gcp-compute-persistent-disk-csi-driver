@@ -2,7 +2,7 @@
 
 set -o nounset
 set -o errexit
-
+set -x 
 readonly PKGDIR=${GOPATH}/src/sigs.k8s.io/gcp-compute-persistent-disk-csi-driver
 readonly gke_cluster_version=${GKE_CLUSTER_VERSION:-latest}
 readonly kube_version=${KUBE_VERSION:-master}
@@ -16,13 +16,13 @@ make -C "${PKGDIR}" test-k8s-integration
 # so that it can run the test specified
 
 ${PKGDIR}/bin/k8s-integration-test --run-in-prow=false --do-driver-build=true \
---gke-cluster-prefix="csitest-" --gke-is-alpha=true --machine-type "n4-standard-8" \
+--gke-cluster-prefix="csitest-" --gke-is-alpha=true --machine-type="n4-standard-8" \
 --gke-cluster-version=1.30.1-gke.1329000 \
 --staging-image=${GCE_PD_CSI_STAGING_IMAGE} --service-account-file=${GCE_PD_SA_DIR}/cloud-sa.json \
---deploy-overlay-name=noauth-debug --storageclass-files=sc-standard.yaml,sc-balanced.yaml,sc-ssd.yaml \
+--deploy-overlay-name="noauth-debug" --storageclass-files="sc-standard.yaml,sc-balanced.yaml,sc-ssd.yaml" \
 --test-focus="External.Storage" --gce-zone="europe-west1-c" \
 --deployment-strategy=gke --gke-cluster-version=${gke_cluster_version} \
---test-version=${TEST_VERSION} --num-nodes=3 --teardown-driver=false 
+--test-version=${test_version} --num-nodes=3 --teardown-driver=false 
 
 # This version of the command creates a GCE cluster. It downloads and builds two k8s releases,
 # one for the cluster and one for the tests, unless the cluster and test versioning is the same.

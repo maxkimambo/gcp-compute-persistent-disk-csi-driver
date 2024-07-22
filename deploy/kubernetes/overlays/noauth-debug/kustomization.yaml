@@ -12,5 +12,5 @@ patchesStrategicMerge:
 namespace: gce-pd-csi-driver
 images:
 - name: gke.gcr.io/gcp-compute-persistent-disk-csi-driver
-  newName: europe-west3-docker.pkg.dev/kimambo-sandbox/csi-dev/gce-pd-csi-driver
+  newName: us-central1-docker.pkg.dev/travisx-joonix/csi-dev/gce-pd-csi-driver
   newTag: dev_linux

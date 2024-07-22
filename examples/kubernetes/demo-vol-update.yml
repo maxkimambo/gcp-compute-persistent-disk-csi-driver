@@ -21,7 +21,7 @@ kind: StorageClass
 metadata:
   name: balanced
 provisioner: pd.csi.storage.gke.io
-allowVolumeExpansion: true 
+allowVolumeExpansion: true
 volumeBindingMode: WaitForFirstConsumer
 parameters:
   type: hyperdisk-balanced

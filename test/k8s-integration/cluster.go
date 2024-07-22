@@ -185,12 +185,14 @@ func clusterUpGKE(gceZone, gceRegion string, numNodes int, numWindowsNodes int, 
 
 	cmdParams := []string{"container", "clusters", "create", *gkeTestClusterName,
 		locationArg, locationVal, "--num-nodes", strconv.Itoa(numNodes),
-		"--quiet", "--machine-type", machineType, "--image-type", imageType, "--no-enable-autoupgrade", "--service-account", "csi-dev@kimambo-sandbox.iam.gserviceaccount.com"}
+		"--quiet", "--machine-type", machineType, "--image-type", imageType, "--no-enable-autoupgrade", "--service-account", "test-sa-travisx@travisx-joonix.iam.gserviceaccount.com"}
 
 	if isAlpha {
 		// prepend beta to be used with gcloud beta container clusters create
 		cmdParams = slices.Insert(cmdParams, 0, "beta")
 		cmdParams = append(cmdParams, "--enable-kubernetes-alpha")
+		cmdParams = append(cmdParams, "--no-enable-autoupgrade")
+		cmdParams = append(cmdParams, "--no-enable-autorepair")
 	}
 	if isVariableSet(gkeClusterVer) {
 		cmdParams = append(cmdParams, "--cluster-version", *gkeClusterVer)
