@@ -51,4 +51,4 @@ Session.vim
 .netrwhist
 
 # Credentials
-creds/
+creds/cloud-sa.json
