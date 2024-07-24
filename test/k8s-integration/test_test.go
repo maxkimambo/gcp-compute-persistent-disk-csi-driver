@@ -9,15 +9,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -38,13 +38,15 @@ import (
 )
 
 const (
-	driverName = "pd.csi.storage.gke.io"
+	defaultNamespace = "default"
+	driverName       = "pd.csi.storage.gke.io"
 
 	disksRequest   = "https://compute.googleapis.com/compute/v1/projects/%s/aggregated/disks"
 	projectRequest = "https://metadata.google.internal/computeMetadata/v1/project/project-id"
 	zoneRequest    = "https://metadata.google.internal/computeMetadata/v1/instance/zone"
 )
 
+// DiskInfo struct used for unmarshalling
 type DiskInfo struct {
 	projectName string
 	pvName      string
@@ -65,117 +67,183 @@ type AggregatedList struct {
 	Items map[string]DiskList `json:"items"`
 }
 
-func TestApplyVac(t *testing.T) {
-	ctx := context.Background()
+func TestControllerModifyVolume(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Run ControllerModifyVolume tests")
+}
 
-	kubeConfigPath := os.Getenv("KUBECONFIG")
-	fmt.Printf("The os env for KUBECONFIG is: %s\n", kubeConfigPath)
-	if kubeConfigPath == "" {
-		kubeConfigPath = os.Getenv("HOME") + "/.kube/config"
-	}
-	fmt.Printf("kubeConfig path is: %s\n", kubeConfigPath)
+var _ = Describe("ControllerModifyVolume tests", func() {
+	var (
+		credsPath      string
+		kubeConfigPath string
+		projectName    string
 
-	config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
-	// TODO: change these to be much better
-	if err != nil {
-		t.Fatalf("Error: %v", err)
-	}
-	if config == nil {
-		t.Fatalf("Error: cannot get config")
-	}
-	// TODO: see if these can be combined to avoid having two clients
-	// Create a clientset for kubernetes and kubernetes alpha (to access VolumeAttributesClasses)
-	clientset, err := kubernetes.NewForConfig(config)
-	cs, k8sErr := k8sv1alpha1.NewForConfig(config)
-	if err != nil || k8sErr != nil {
-		t.Fatalf("Error: cannot create clientset")
-	}
-	// TODO: figure out if creating ns is necessary or if it just complicates things
-	/*
-		nsName := "test-ns"
-		namespace := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: nsName,
-			},
+		ctx       context.Context
+		clientset *kubernetes.Clientset
+		// computeClient *computev1.DisksClient
+		storageClient *k8sv1alpha1.StorageV1alpha1Client
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		kubeConfigPath = os.Getenv("KUBECONFIG")
+		// If $KUBECONFIG is not set, we take the config from ~/.kube/config
+		if kubeConfigPath == "" {
+			kubeConfigPath = os.Getenv("HOME") + "/.kube/config"
 		}
-		_, nsErr := clientset.CoreV1().Namespaces().Create(ctx, namespace, metav1.CreateOptions{})
-		if nsErr != nil {
-			t.Fatalf("Could not create namespace %s: %v", nsName, nsErr)
-		}
-		fmt.Printf("Made it after creating the namespace %s\n", nsName)
-	*/
 
-	// TODO: change these to be constants
-	initialSize := "100Gi"
-	initialIops := "3000"
-	initialThroughput := "150"
-	storageClassName := "test-storageclass"
+		projectName = strings.Trim(os.Getenv("PROJECT"), "\n")
+		Expect(projectName).ToNot(Equal(""))
+
+		credsPath = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
+		filepath.Clean(credsPath)
+
+		// Setup clients
+		config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+		clientset, err = kubernetes.NewForConfig(config)
+		Expect(err).To(BeNil())
+		storageClient, err = k8sv1alpha1.NewForConfig(config)
+		Expect(err).To(BeNil())
+
+		// TODO: Read from the OS env instead
+		// credentialsOption := option.WithCredentialsFile(credsPath)
+		// computeClient, err = computev1.NewDisksRESTClient(ctx, credentialsOption)
+		// Expect(err).To(BeNil())
+		// defer computeClient.Close()
+	})
+
+	Context("Updates to hyperdisks", func() {
+		It("HdB should pass with normal constraints", func() {
+			credentialsOption := option.WithCredentialsFile(credsPath)
+			computeClient, err2 := computev1.NewDisksRESTClient(ctx, credentialsOption)
+			Expect(err2).To(BeNil())
+			defer computeClient.Close()
+
+			// TODO: change these to be constants
+			initialSize := "100Gi"
+			initialIops := "3000"
+			initialThroughput := "150"
+			storageClassName := "test-storageclass"
+
+			err := createStorageClass(clientset, storageClassName, "hyperdisk-balanced", &initialIops, &initialThroughput, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
+
+			vacName1 := "test-vac1"
+			err = createVac(storageClient, vacName1, &initialIops, &initialThroughput, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
+
+			pvcName := "test-pvc"
+			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
+
+			podName := "test-pod"
+			err = createPod(clientset, podName, pvcName, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("Made it after creating the Pod %s\n", podName)
+
+			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
+
+			diskInfo := DiskInfo{
+				pvName:      pvName,
+				projectName: projectName,
+				zone:        zoneName,
+			}
+			iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
+			Expect(strconv.FormatInt(iops, 10)).To(Equal(initialIops))
+			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
+
+			vacName2 := "test-vac2"
+			updatedIops := "3013"
+			updatedThroughput := "181"
+			err = createVac(storageClient, vacName2, &updatedIops, &updatedThroughput, ctx)
+			Expect(err).To(BeNil())
+
+			err = patchPvc(clientset, pvcName, vacName2, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The code made it past patching the pv!")
+
+			err = waitUntilUpdate(computeClient, diskInfo, &iops, &throughput, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The PV updated the metadata!")
+
+			iops, throughput, err = getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
+			Expect(strconv.FormatInt(iops, 10)).To(Equal(updatedIops))
+			Expect(strconv.FormatInt(throughput, 10)).To(Equal(updatedThroughput))
+		})
+	})
+})
+
+func createStorageClass(clientset *kubernetes.Clientset, storageClassName string, diskType string, iops *string, throughput *string, ctx context.Context) error {
 	waitForFirstConsumer := storagev1.VolumeBindingWaitForFirstConsumer
+	parameters := map[string]string{
+		"type": diskType,
+	}
+	if iops != nil {
+		parameters["provisioned-iops-on-create"] = *iops
+	}
+	if throughput != nil {
+		parameters["provisioned-throughput-on-create"] = *throughput + "Mi"
+	}
 	storageClass := &storagev1.StorageClass{
 		ObjectMeta: metav1.ObjectMeta{
-			// Namespace: nsName,
 			Name: storageClassName,
 		},
-		Provisioner: driverName,
-		Parameters: map[string]string{
-			"type":                             "hyperdisk-balanced",
-			"provisioned-iops-on-create":       initialIops,
-			"provisioned-throughput-on-create": initialThroughput + "Mi",
-		},
+		Provisioner:       driverName,
+		Parameters:        parameters,
 		VolumeBindingMode: &waitForFirstConsumer,
 	}
-	_, scErr := clientset.StorageV1().StorageClasses().Create(ctx, storageClass, metav1.CreateOptions{})
-	if scErr != nil {
-		t.Fatalf("Could not create StorageClass %s: %v", storageClassName, scErr)
-	}
+	_, err := clientset.StorageV1().StorageClasses().Create(ctx, storageClass, metav1.CreateOptions{})
+	return err
+}
 
-	fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
-	vacName1 := "test-vac1"
+func createVac(storageClient *k8sv1alpha1.StorageV1alpha1Client, vacName string, iops *string, throughput *string, ctx context.Context) error {
+	parameters := map[string]string{}
+	if iops != nil {
+		parameters["iops"] = *iops
+	}
+	if throughput != nil {
+		parameters["throughput"] = *throughput
+	}
 	vac1 := &storagev1alpha1.VolumeAttributesClass{
 		ObjectMeta: metav1.ObjectMeta{
-			// Namespace: nsName,
-			Name: vacName1,
+			Name: vacName,
 		},
 		DriverName: driverName,
-		Parameters: map[string]string{
-			"iops":       initialIops,
-			"throughput": initialThroughput,
-		},
+		Parameters: parameters,
 	}
-	_, vacErr := cs.VolumeAttributesClasses().Create(ctx, vac1, metav1.CreateOptions{})
-	if vacErr != nil {
-		t.Fatalf("Could not create VolumeAttributesClass %s: %v", vacName1, vacErr)
-	}
-	fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
+	_, err := storageClient.VolumeAttributesClasses().Create(ctx, vac1, metav1.CreateOptions{})
+	return err
+}
 
-	pvcName := "test-pvc"
+func createPvc(clientset *kubernetes.Clientset, pvcName string, size string, storageClassName string, vacName string, ctx context.Context) error {
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			// Namespace: nsName,
 			Name: pvcName,
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse(initialSize),
+					corev1.ResourceStorage: resource.MustParse(size),
 				},
 			},
 			StorageClassName:          &storageClassName,
-			VolumeAttributesClassName: &vacName1,
+			VolumeAttributesClassName: &vacName,
 		},
 	}
-	// newPvc, err := clientset.CoreV1().PersistentVolumeClaims(nsName).Create(ctx, pvc, metav1.CreateOptions{})
-	newPvc, err := clientset.CoreV1().PersistentVolumeClaims("default").Create(ctx, pvc, metav1.CreateOptions{})
-	if err != nil || newPvc == nil {
-		t.Fatalf("Error when creating PVC: %v", err)
-	}
-	fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
+	_, err := clientset.CoreV1().PersistentVolumeClaims(defaultNamespace).Create(ctx, pvc, metav1.CreateOptions{})
+	return err
+}
 
+func createPod(clientset *kubernetes.Clientset, podName string, pvcName string, ctx context.Context) error {
 	pvcVolumeSource := corev1.PersistentVolumeClaimVolumeSource{
 		ClaimName: pvcName,
 	}
-	podName := "test-pod"
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: podName,
@@ -208,99 +276,8 @@ func TestApplyVac(t *testing.T) {
 			},
 		},
 	}
-	_, podErr := clientset.CoreV1().Pods("default").Create(ctx, pod, metav1.CreateOptions{})
-	// _, podErr := clientset.CoreV1().Pods(nsName).Create(ctx, pod, metav1.CreateOptions{})
-	if podErr != nil {
-		t.Fatalf("Cannot create pod %s: %v", podName, podErr)
-	}
-	fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-	projectName, err := getProjectName()
-	fmt.Printf("The project name is %s\n", projectName)
-	if err != nil {
-		t.Fatalf("Error: %d", err)
-	}
-
-	credsPath := filepath.Join("..", "..", "creds", "cloud-sa.json")
-	credentialsOption := option.WithCredentialsFile(credsPath)
-	computeClient, err := computev1.NewDisksRESTClient(ctx, credentialsOption)
-	if err != nil {
-		t.Fatalf("Could not create a compute engine client: %v", err)
-	}
-	defer computeClient.Close()
-
-	pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, "default", pvcName, ctx)
-	// pvName, err := getPVName(clientset, nsName, pvcName, ctx)
-	fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-	if err != nil {
-		t.Fatalf("Error: %v", err)
-	}
-
-	// zoneName, err := getZoneFromPV(projectName, pvName)
-	// if err != nil {
-	// 	t.Fatalf("Error: %v", err)
-	// }
-	diskInfo := DiskInfo{
-		pvName:      pvName,
-		projectName: projectName,
-		zone:        zoneName,
-	}
-
-	iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
-	if strconv.FormatInt(iops, 10) != initialIops {
-		t.Fatalf("Error: The provisioned IOPS does not match initial IOPS! Got: %d, want: %s", iops, initialIops)
-	}
-	if strconv.FormatInt(throughput, 10) != initialThroughput {
-		t.Fatalf("Error: The provisioned throughput does not match initial throughput! Got: %d, want: %s", throughput, initialThroughput)
-	}
-
-	vacName2 := "test-vac2"
-	updatedIops := "3013"
-	updatedThroughput := "181"
-	vac2 := &storagev1alpha1.VolumeAttributesClass{
-		ObjectMeta: metav1.ObjectMeta{
-			// Namespace: nsName,
-			Name: vacName2,
-		},
-		DriverName: driverName,
-		Parameters: map[string]string{
-			"iops":       updatedIops,
-			"throughput": updatedThroughput,
-		},
-	}
-	_, vacErr = cs.VolumeAttributesClasses().Create(ctx, vac2, metav1.CreateOptions{})
-	if vacErr != nil {
-		t.Fatalf("Error when creating vac %s: %v", vacName2, vacErr)
-	}
-
-	patch := []map[string]interface{}{
-		{
-			"op":    "replace",
-			"path":  "/spec/volumeAttributesClassName",
-			"value": vacName2,
-		},
-	}
-	patchBytes, err := json.Marshal(patch)
-	if err != nil {
-		t.Fatalf("Error when marshalling patch: %v", err)
-	}
-	_, err = clientset.CoreV1().PersistentVolumeClaims("default").Patch(ctx, pvcName, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
-	if err != nil {
-		t.Fatalf("Error when patching pvc: %v", err)
-	}
-	fmt.Printf("The code made it past patching the pv!")
-
-	err = waitUntilUpdate(computeClient, diskInfo, &iops, &throughput, ctx)
-	if err != nil {
-		t.Fatalf("Error when waiting for update: %v", err)
-	}
-	iops, throughput, err = getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
-	if strconv.FormatInt(iops, 10) != updatedIops {
-		t.Fatalf("Error: The provisioned IOPS does not match updated IOPS! Got: %d, want: %s", iops, updatedIops)
-	}
-	if strconv.FormatInt(throughput, 10) != updatedThroughput {
-		t.Fatalf("Error: The provisioned throughput does not match updated throughput! Got: %d, want: %s", throughput, updatedThroughput)
-	}
+	_, err := clientset.CoreV1().Pods(defaultNamespace).Create(ctx, pod, metav1.CreateOptions{})
+	return err
 }
 
 func getPVNameAndZone(clientset *kubernetes.Clientset, computeClient *computev1.DisksClient, projectName string, nsName string, pvcName string, ctx context.Context) (string, string, error) {
@@ -308,14 +285,15 @@ func getPVNameAndZone(clientset *kubernetes.Clientset, computeClient *computev1.
 	if err != nil {
 		return "", "", err
 	}
+	fmt.Printf("The pvName is %s and the projectName is %s\n", pvName, projectName)
 	getDiskRequest := &computepb.GetDiskRequest{
 		Disk:    pvName,
 		Project: projectName,
 	}
 	// zones represents all possible zones the pv is in, iterate to see which zone the PV is in
 	for _, zone := range zones {
-		getDiskRequest.Zone = zone
 		fmt.Printf("Testing zone %s\n", zone)
+		getDiskRequest.Zone = zone
 		pv, err := computeClient.Get(ctx, getDiskRequest)
 		if err == nil && pv != nil {
 			return pvName, zone, nil
@@ -327,7 +305,7 @@ func getPVNameAndZone(clientset *kubernetes.Clientset, computeClient *computev1.
 // getPVNameAndZones returns the PV name and possible zones (based off the node affinity) corresponding to the pvcName in namespace nsName.
 func getPVNameAndZones(clientset *kubernetes.Clientset, nsName string, pvcName string, ctx context.Context) (string, []string, error) {
 	pvName := ""
-	pvcErr := wait.PollUntilContextCancel(ctx, 30*time.Second, false, func(ctx context.Context) (bool, error) {
+	pvcErr := wait.PollUntilContextCancel(ctx, 60*time.Second, false, func(ctx context.Context) (bool, error) {
 		pvc, err := clientset.CoreV1().PersistentVolumeClaims(nsName).Get(ctx, pvcName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -373,16 +351,6 @@ func getPVNameAndZones(clientset *kubernetes.Clientset, nsName string, pvcName s
 	return pvName, zoneNames, nil
 }
 
-// TODO: just read the project name from the OS environment variable
-// getProjectName gets the project name through gcloud. Assumes the user is authenticated for gcloud already.
-func getProjectName() (string, error) {
-	projectName := os.Getenv("PROJECT")
-	if projectName == "" {
-		return "", fmt.Errorf("Error: $PROJECT is not set. Please set it and try again.")
-	}
-	return strings.Trim(string(projectName), "\n"), nil
-}
-
 func getMetadataFromPV(computeClient *computev1.DisksClient, diskInfo DiskInfo, getIops bool, getThroughput bool, ctx context.Context) (int64, int64, error) {
 	getDiskRequest := &computepb.GetDiskRequest{
 		Disk:    diskInfo.pvName,
@@ -404,52 +372,20 @@ func getMetadataFromPV(computeClient *computev1.DisksClient, diskInfo DiskInfo, 
 	return iops, throughput, nil
 }
 
-// getZoneFromPV returns the string of the persistent volume `pvName`. Assumes the user is authenticated on gcloud.
-func getZoneFromPV(projectName string, pvName string) (string, error) {
-	// should be able to get from node affinity
-	cmd := exec.Command("gcloud", "auth", "application-default", "print-access-token")
-	output, err := cmd.Output()
+func patchPvc(clientset *kubernetes.Clientset, pvcName string, vacName string, ctx context.Context) error {
+	patch := []map[string]interface{}{
+		{
+			"op":    "replace",
+			"path":  "/spec/volumeAttributesClassName",
+			"value": vacName,
+		},
+	}
+	patchBytes, err := json.Marshal(patch)
 	if err != nil {
-		// TODO: instruct the gcloud command to use
-		return "", fmt.Errorf("Could not get access token: %v", err)
+		return err
 	}
-	accessToken := strings.Trim(string(output), "\n")
-
-	listDiskReq := fmt.Sprintf(disksRequest, projectName)
-	req, err := http.NewRequest("GET", listDiskReq, nil)
-	if err != nil {
-		return "", fmt.Errorf("Error when creating the http request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("Error from client.Do: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("Error: %v", string(respBody))
-	}
-
-	var diskList AggregatedList
-	jsonErr := json.NewDecoder(resp.Body).Decode(&diskList)
-	if jsonErr != nil {
-		return "", fmt.Errorf("Error when decoding: %v", jsonErr)
-	}
-	fullZoneName := ""
-	for _, disks := range diskList.Items {
-		for _, disk := range disks.Disks {
-			if disk.Name == pvName {
-				fmt.Printf("The zone of disk %s is: %s\n", pvName, disk.Zone)
-				fullZoneName = disk.Zone
-			}
-		}
-	}
-	zoneParts := strings.Split(fullZoneName, "/")
-	return zoneParts[len(zoneParts)-1], nil
+	_, err = clientset.CoreV1().PersistentVolumeClaims(defaultNamespace).Patch(ctx, pvcName, types.JSONPatchType, patchBytes, metav1.PatchOptions{})
+	return err
 }
 
 func waitUntilUpdate(computeClient *computev1.DisksClient, diskInfo DiskInfo, initialIops *int64, initialThroughput *int64, ctx context.Context) error {
