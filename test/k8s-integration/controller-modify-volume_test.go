@@ -38,21 +38,26 @@ import (
 )
 
 const (
-	defaultNamespace = "default"
-	driverName       = "pd.csi.storage.gke.io"
+	defaultNamespace   = "default"
+	driverName         = "pd.csi.storage.gke.io"
+	storageClassPrefix = "test-storageclass-"
+	pvcPrefix          = "test-pvc-"
+	vac1Prefix         = "test-vac1-"
+	vac2Prefix         = "test-vac2-"
+	podPrefix          = "test-pod-"
 
 	disksRequest   = "https://compute.googleapis.com/compute/v1/projects/%s/aggregated/disks"
 	projectRequest = "https://metadata.google.internal/computeMetadata/v1/project/project-id"
 	zoneRequest    = "https://metadata.google.internal/computeMetadata/v1/instance/zone"
 )
 
-// DiskInfo struct used for unmarshalling
 type DiskInfo struct {
 	projectName string
 	pvName      string
 	zone        string
 }
 
+// Disk, DiskList, and AggregatedList structs are used for unmarshalling
 type Disk struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -74,14 +79,20 @@ func TestControllerModifyVolume(t *testing.T) {
 
 var _ = Describe("ControllerModifyVolume tests", func() {
 	var (
-		credsPath      string
-		kubeConfigPath string
-		projectName    string
+		credsPath        string
+		kubeConfigPath   string
+		projectName      string
+		storageClassName string
+		vacName1         string
+		vacName2         string
+		pvcName          string
+		podName          string
 
-		ctx       context.Context
-		clientset *kubernetes.Clientset
-		// computeClient *computev1.DisksClient
-		storageClient *k8sv1alpha1.StorageV1alpha1Client
+		ctx               context.Context
+		clientset         *kubernetes.Clientset
+		credentialsOption option.ClientOption
+		computeClient     *computev1.DisksClient
+		storageClient     *k8sv1alpha1.StorageV1alpha1Client
 	)
 
 	BeforeEach(func() {
@@ -102,46 +113,58 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
 		clientset, err = kubernetes.NewForConfig(config)
 		Expect(err).To(BeNil())
+
 		storageClient, err = k8sv1alpha1.NewForConfig(config)
 		Expect(err).To(BeNil())
 
-		// TODO: Read from the OS env instead
-		// credentialsOption := option.WithCredentialsFile(credsPath)
-		// computeClient, err = computev1.NewDisksRESTClient(ctx, credentialsOption)
-		// Expect(err).To(BeNil())
-		// defer computeClient.Close()
+		credentialsOption = option.WithCredentialsFile(credsPath)
+		computeClient, err = computev1.NewDisksRESTClient(ctx, credentialsOption)
+		Expect(err).To(BeNil())
+
+		// Generate unique names for the created resources
+		suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+		fmt.Printf("The current time is %s\n", suffix)
+		storageClassName = storageClassPrefix + suffix
+		vacName1 = vac1Prefix + suffix
+		vacName2 = vac2Prefix + suffix
+		pvcName = pvcPrefix + suffix
+		podName = podPrefix + suffix
+	})
+
+	AfterEach(func() {
+		computeClient.Close()
 	})
 
 	Context("Updates to hyperdisks", func() {
 		It("HdB should pass with normal constraints", func() {
-			credentialsOption := option.WithCredentialsFile(credsPath)
-			computeClient, err2 := computev1.NewDisksRESTClient(ctx, credentialsOption)
-			Expect(err2).To(BeNil())
-			defer computeClient.Close()
-
-			// TODO: change these to be constants
-			initialSize := "100Gi"
+			initialSize := "64Gi"
 			initialIops := "3000"
 			initialThroughput := "150"
-			storageClassName := "test-storageclass"
 
 			err := createStorageClass(clientset, storageClassName, "hyperdisk-balanced", &initialIops, &initialThroughput, ctx)
 			Expect(err).To(BeNil())
+			defer cleanupStorageClass(clientset, storageClassName, ctx)
 			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
 
-			vacName1 := "test-vac1"
 			err = createVac(storageClient, vacName1, &initialIops, &initialThroughput, ctx)
 			Expect(err).To(BeNil())
+			defer cleanupVac(storageClient, vacName1, ctx)
 			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
 
-			pvcName := "test-pvc"
+			updatedIops := "3013"
+			updatedThroughput := "181"
+			err = createVac(storageClient, vacName2, &updatedIops, &updatedThroughput, ctx)
+			defer cleanupVac(storageClient, vacName2, ctx)
+			Expect(err).To(BeNil())
+
 			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
 			Expect(err).To(BeNil())
+			defer cleanupPvc(clientset, pvcName, ctx)
 			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
 
-			podName := "test-pod"
 			err = createPod(clientset, podName, pvcName, ctx)
 			Expect(err).To(BeNil())
+			defer cleanupPod(clientset, podName, ctx)
 			fmt.Printf("Made it after creating the Pod %s\n", podName)
 
 			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, ctx)
@@ -157,23 +180,76 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 			Expect(strconv.FormatInt(iops, 10)).To(Equal(initialIops))
 			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
 
-			vacName2 := "test-vac2"
-			updatedIops := "3013"
-			updatedThroughput := "181"
-			err = createVac(storageClient, vacName2, &updatedIops, &updatedThroughput, ctx)
-			Expect(err).To(BeNil())
-
 			err = patchPvc(clientset, pvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
 			fmt.Printf("The code made it past patching the pv!")
 
-			err = waitUntilUpdate(computeClient, diskInfo, &iops, &throughput, ctx)
+			err = waitUntilUpdate(computeClient, 11, diskInfo, &iops, &throughput, ctx)
 			Expect(err).To(BeNil())
 			fmt.Printf("The PV updated the metadata!")
+
+			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
+			Expect(err).To(BeNil())
+			Expect(currentVacName).To(Equal(vacName2))
 
 			iops, throughput, err = getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
 			Expect(strconv.FormatInt(iops, 10)).To(Equal(updatedIops))
 			Expect(strconv.FormatInt(throughput, 10)).To(Equal(updatedThroughput))
+		})
+
+		It("HdB with invalid update parameters doesn't update PV", func() {
+			initialSize := "64Gi"
+			initialIops := "3000"
+			initialThroughput := "150"
+
+			err := createStorageClass(clientset, storageClassName, "hyperdisk-balanced", &initialIops, &initialThroughput, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupStorageClass(clientset, storageClassName, ctx)
+			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
+
+			err = createVac(storageClient, vacName1, &initialIops, &initialThroughput, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupVac(storageClient, vacName1, ctx)
+			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
+
+			updatedIops := "120000"
+			updatedThroughput := "150"
+			err = createVac(storageClient, vacName2, &updatedIops, &updatedThroughput, ctx)
+			defer cleanupVac(storageClient, vacName2, ctx)
+			Expect(err).To(BeNil())
+
+			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupPvc(clientset, pvcName, ctx)
+			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
+
+			err = createPod(clientset, podName, pvcName, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupPod(clientset, podName, ctx)
+			fmt.Printf("Made it after creating the Pod %s\n", podName)
+
+			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
+
+			diskInfo := DiskInfo{
+				pvName:      pvName,
+				projectName: projectName,
+				zone:        zoneName,
+			}
+			iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
+			Expect(strconv.FormatInt(iops, 10)).To(Equal(initialIops))
+			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
+
+			err = patchPvc(clientset, pvcName, vacName2, ctx)
+			Expect(err).To(BeNil())
+
+			err = waitUntilUpdate(computeClient, 2, diskInfo, &iops, &throughput, ctx)
+			Expect(err).ToNot(BeNil())
+
+			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
+			Expect(err).To(BeNil())
+			Expect(currentVacName).To(Equal(vacName1))
 		})
 	})
 })
@@ -201,6 +277,13 @@ func createStorageClass(clientset *kubernetes.Clientset, storageClassName string
 	return err
 }
 
+func cleanupStorageClass(clientset *kubernetes.Clientset, storageClassName string, ctx context.Context) {
+	err := clientset.StorageV1().StorageClasses().Delete(ctx, storageClassName, metav1.DeleteOptions{})
+	if err != nil {
+		fmt.Printf("Deleting storage class %s failed with error: %v\n", storageClassName, err)
+	}
+}
+
 func createVac(storageClient *k8sv1alpha1.StorageV1alpha1Client, vacName string, iops *string, throughput *string, ctx context.Context) error {
 	parameters := map[string]string{}
 	if iops != nil {
@@ -218,6 +301,13 @@ func createVac(storageClient *k8sv1alpha1.StorageV1alpha1Client, vacName string,
 	}
 	_, err := storageClient.VolumeAttributesClasses().Create(ctx, vac1, metav1.CreateOptions{})
 	return err
+}
+
+func cleanupVac(storageClient *k8sv1alpha1.StorageV1alpha1Client, vacName string, ctx context.Context) {
+	err := storageClient.VolumeAttributesClasses().Delete(ctx, vacName, metav1.DeleteOptions{})
+	if err != nil {
+		fmt.Printf("Deleting VolumeAttributesClass %s failed with error: %v\n", vacName, err)
+	}
 }
 
 func createPvc(clientset *kubernetes.Clientset, pvcName string, size string, storageClassName string, vacName string, ctx context.Context) error {
@@ -238,6 +328,13 @@ func createPvc(clientset *kubernetes.Clientset, pvcName string, size string, sto
 	}
 	_, err := clientset.CoreV1().PersistentVolumeClaims(defaultNamespace).Create(ctx, pvc, metav1.CreateOptions{})
 	return err
+}
+
+func cleanupPvc(clientset *kubernetes.Clientset, pvcName string, ctx context.Context) {
+	err := clientset.CoreV1().PersistentVolumeClaims(defaultNamespace).Delete(ctx, pvcName, metav1.DeleteOptions{})
+	if err != nil {
+		fmt.Printf("Deleting PVC %s failed with error: %v\n", pvcName, err)
+	}
 }
 
 func createPod(clientset *kubernetes.Clientset, podName string, pvcName string, ctx context.Context) error {
@@ -278,6 +375,13 @@ func createPod(clientset *kubernetes.Clientset, podName string, pvcName string, 
 	}
 	_, err := clientset.CoreV1().Pods(defaultNamespace).Create(ctx, pod, metav1.CreateOptions{})
 	return err
+}
+
+func cleanupPod(clientset *kubernetes.Clientset, podName string, ctx context.Context) {
+	err := clientset.CoreV1().Pods(defaultNamespace).Delete(ctx, podName, metav1.DeleteOptions{})
+	if err != nil {
+		fmt.Printf("Deleting PVC %s failed with error: %v\n", podName, err)
+	}
 }
 
 func getPVNameAndZone(clientset *kubernetes.Clientset, computeClient *computev1.DisksClient, projectName string, nsName string, pvcName string, ctx context.Context) (string, string, error) {
@@ -372,6 +476,18 @@ func getMetadataFromPV(computeClient *computev1.DisksClient, diskInfo DiskInfo, 
 	return iops, throughput, nil
 }
 
+func getVacFromPV(clientset *kubernetes.Clientset, pvName string, ctx context.Context) (string, error) {
+	pv, err := clientset.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	vacName := pv.Spec.VolumeAttributesClassName
+	if *vacName == "" {
+		return "", fmt.Errorf("Could not get the VolumeAttributesClassName.")
+	}
+	return *vacName, nil
+}
+
 func patchPvc(clientset *kubernetes.Clientset, pvcName string, vacName string, ctx context.Context) error {
 	patch := []map[string]interface{}{
 		{
@@ -388,12 +504,12 @@ func patchPvc(clientset *kubernetes.Clientset, pvcName string, vacName string, c
 	return err
 }
 
-func waitUntilUpdate(computeClient *computev1.DisksClient, diskInfo DiskInfo, initialIops *int64, initialThroughput *int64, ctx context.Context) error {
+func waitUntilUpdate(computeClient *computev1.DisksClient, numMinutes int, diskInfo DiskInfo, initialIops *int64, initialThroughput *int64, ctx context.Context) error {
 	backoff := wait.Backoff{
 		Duration: 1 * time.Minute,
 		Factor:   1.0,
-		Steps:    10,
-		Cap:      11 * time.Minute,
+		Steps:    numMinutes,
+		Cap:      time.Duration(numMinutes) * time.Minute,
 	}
 	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(ctx context.Context) (bool, error) {
 		iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, initialIops != nil, initialThroughput != nil, ctx)
