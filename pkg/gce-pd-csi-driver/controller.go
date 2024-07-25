@@ -201,7 +201,17 @@ const (
 
 var (
 	validResourceApiVersions = map[string]bool{"v1": true, "alpha": true, "beta": true, "staging_v1": true, "staging_beta": true, "staging_alpha": true}
-
+	// disk types that support IOPS and Throughput parameters setting / modifications
+	diskSupportsIopsAndThroughput = map[string]bool{
+		"pd-balanced":          false,
+		"pd-standard":          false,
+		"pd-ssd":               false,
+		"pd-extreme":           true,
+		"hyperdisk-ml":         true,
+		"hyperdisk-balanced":   true,
+		"hyperdisk-throughput": true,
+		"hyperdisk-extreme":    true,
+	}
 	// By default GCE returns a lot of data for each instance. Request only a subset of the fields.
 	listInstancesFields = []googleapi.Field{
 		"items/disks/deviceName",
@@ -331,13 +341,9 @@ func (gceCS *GCEControllerServer) createVolumeInternal(ctx context.Context, req 
 	// https://github.com/container-storage-interface/spec/blob/master/spec.md#createvolume
 	// mutable_parameters MUST take precedence over the values from parameters.
 	mutableParams := req.GetMutableParameters()
-
-	klog.V(4).Infof("CreateVolume parameters: %v", params)
-	klog.V(4).Infof("CreateVolume mutable parameters: %v", mutableParams)
-	klog.V(4).Infof("CreateVolume disk type: %v", diskTypeForMetric)
-	
-	// If the disk type is pd-*, the IOPS and Throughput parameters are ignored.
-	if !strings.HasPrefix(params.DiskType, "pd-") {
+	// If the disk type is pd-balanced, pd-ssd, pd-standard except for pd-extreme,
+	// the IOPS and Throughput parameters are ignored.
+	if diskSupportsIopsAndThroughput[params.DiskType] && len(mutableParams) > 0 {
 		p, err := common.ExtractModifyVolumeParameters(mutableParams)
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "Invalid mutable parameters: %v", err)
@@ -777,6 +783,11 @@ func (gceCS *GCEControllerServer) ControllerModifyVolume(ctx context.Context, re
 		return nil, status.Errorf(codes.Internal, "failed to get volume : %s", volumeID)
 	}
 	diskType = existingDisk.GetPDType()
+
+	if !diskSupportsIopsAndThroughput[diskType] {
+		return nil, status.Errorf(codes.InvalidArgument, "Failed to modify volume: modifications not supported for disk type %s", diskType)
+	}
+
 	// TODO : not sure how this metric should be reported
 	if existingDisk.GetEnableStoragePools() {
 		enableStoragePools = "enabled"
