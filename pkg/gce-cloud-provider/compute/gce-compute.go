@@ -482,10 +482,11 @@ func (cloud *CloudProvider) updateZonalDisk(ctx context.Context, project string,
 	}
 
 	diskUpdateOp := cloud.service.Disks.Update(project, volKey.Zone, volKey.Name, updatedDisk)
-	if params.IOPS != nil {
+	if params.IOPS != nil && params.Throughput != nil {
+		diskUpdateOp.Paths("provisionedIops", "provisionedThroughput")
+	} else if params.IOPS != nil {
 		diskUpdateOp.Paths("provisionedIops")
-	}
-	if params.Throughput != nil {
+	} else {
 		diskUpdateOp.Paths("provisionedThroughput")
 	}
 	_, err := diskUpdateOp.Context(ctx).Do()
