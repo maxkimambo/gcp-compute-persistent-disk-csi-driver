@@ -461,7 +461,6 @@ func (cloud *CloudProvider) InsertDisk(ctx context.Context, project string, volK
 }
 
 func (cloud *CloudProvider) UpdateDisk(ctx context.Context, project string, volKey *meta.Key, existingDisk *CloudDisk, params common.ModifyVolumeParameters) error {
-
 	klog.V(5).Infof("Updating disk %v", volKey)
 	// hyperdisks are zonal disks
 	// pd-disks do not support modification of IOPS and Throughput
@@ -469,18 +468,26 @@ func (cloud *CloudProvider) UpdateDisk(ctx context.Context, project string, volK
 }
 
 func (cloud *CloudProvider) updateZonalDisk(ctx context.Context, project string, volKey *meta.Key, existingDisk *CloudDisk, params common.ModifyVolumeParameters) error {
-
-	if params.IOPS == 0 && params.Throughput == 0 {
+	if params.IOPS == nil && params.Throughput == nil {
 		return fmt.Errorf("no IOPS or Throughput specified for disk %v", existingDisk.GetSelfLink())
 	}
 	updatedDisk := &computev1.Disk{
-		Name:                  existingDisk.GetName(),
-		ProvisionedIops:       params.IOPS,
-		ProvisionedThroughput: params.Throughput,
+		Name: existingDisk.GetName(),
+	}
+	if params.IOPS != nil {
+		updatedDisk.ProvisionedIops = *params.IOPS
+	}
+	if params.Throughput != nil {
+		updatedDisk.ProvisionedThroughput = *params.Throughput
 	}
 
 	diskUpdateOp := cloud.service.Disks.Update(project, volKey.Zone, volKey.Name, updatedDisk)
-	diskUpdateOp.Paths("provisionedIops", "provisionedThroughput")
+	if params.IOPS != nil {
+		diskUpdateOp.Paths("provisionedIops")
+	}
+	if params.Throughput != nil {
+		diskUpdateOp.Paths("provisionedThroughput")
+	}
 	_, err := diskUpdateOp.Context(ctx).Do()
 
 	if err != nil {

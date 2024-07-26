@@ -132,8 +132,8 @@ type ParameterProcessor struct {
 }
 
 type ModifyVolumeParameters struct {
-	IOPS       int64
-	Throughput int64
+	IOPS       *int64
+	Throughput *int64
 }
 
 // ExtractAndDefaultParameters will take the relevant parameters from a map and
@@ -341,13 +341,13 @@ func ExtractModifyVolumeParameters(parameters map[string]string) (ModifyVolumePa
 			if err != nil {
 				return ModifyVolumeParameters{}, fmt.Errorf("parameters contain invalid iops parameter: %w", err)
 			}
-			modifyVolumeParams.IOPS = iops
+			modifyVolumeParams.IOPS = &iops
 		case "throughput":
 			throughput, err := ConvertStringToInt64(value)
 			if err != nil {
 				return ModifyVolumeParameters{}, fmt.Errorf("parameters contain invalid throughput parameter: %w", err)
 			}
-			modifyVolumeParams.Throughput = throughput
+			modifyVolumeParams.Throughput = &throughput
 		}
 	}
 	return modifyVolumeParams, nil

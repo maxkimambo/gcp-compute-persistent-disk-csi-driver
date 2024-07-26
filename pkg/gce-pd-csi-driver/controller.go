@@ -201,16 +201,27 @@ const (
 
 var (
 	validResourceApiVersions = map[string]bool{"v1": true, "alpha": true, "beta": true, "staging_v1": true, "staging_beta": true, "staging_alpha": true}
-	// disk types that support IOPS and Throughput parameters setting / modifications
-	diskSupportsIopsAndThroughput = map[string]bool{
+	// Disk types that support dynamic IOPS changes
+	diskSupportsIopsChange = map[string]bool{
 		"pd-balanced":          false,
 		"pd-standard":          false,
 		"pd-ssd":               false,
-		"pd-extreme":           true,
+		"pd-extreme":           false,
+		"hyperdisk-ml":         false,
+		"hyperdisk-balanced":   true,
+		"hyperdisk-throughput": false,
+		"hyperdisk-extreme":    true,
+	}
+	// Disk types that support dynamic throughput changes
+	diskSupportsThroughputChange = map[string]bool{
+		"pd-balanced":          false,
+		"pd-standard":          false,
+		"pd-ssd":               false,
+		"pd-extreme":           false,
 		"hyperdisk-ml":         true,
 		"hyperdisk-balanced":   true,
 		"hyperdisk-throughput": true,
-		"hyperdisk-extreme":    true,
+		"hyperdisk-extreme":    false,
 	}
 	// By default GCE returns a lot of data for each instance. Request only a subset of the fields.
 	listInstancesFields = []googleapi.Field{
@@ -343,13 +354,19 @@ func (gceCS *GCEControllerServer) createVolumeInternal(ctx context.Context, req 
 	mutableParams := req.GetMutableParameters()
 	// If the disk type is pd-balanced, pd-ssd, pd-standard except for pd-extreme,
 	// the IOPS and Throughput parameters are ignored.
-	if diskSupportsIopsAndThroughput[params.DiskType] && len(mutableParams) > 0 {
+	supportsIopsChange := diskSupportsIopsChange[params.DiskType]
+	supportsThroughputChange := diskSupportsThroughputChange[params.DiskType]
+	if (supportsIopsChange || supportsThroughputChange) && len(mutableParams) > 0 {
 		p, err := common.ExtractModifyVolumeParameters(mutableParams)
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "Invalid mutable parameters: %v", err)
 		}
-		params.ProvisionedIOPSOnCreate = p.IOPS
-		params.ProvisionedThroughputOnCreate = p.Throughput
+		if supportsIopsChange && p.IOPS != nil {
+			params.ProvisionedIOPSOnCreate = *p.IOPS
+		}
+		if supportsThroughputChange && p.Throughput != nil {
+			params.ProvisionedThroughputOnCreate = *p.Throughput
+		}
 	} else {
 		klog.V(4).Infof("Ignoring IOPS and throughput parameters for unsupported disk type %s", params.DiskType)
 	}
@@ -784,7 +801,7 @@ func (gceCS *GCEControllerServer) ControllerModifyVolume(ctx context.Context, re
 	}
 	diskType = existingDisk.GetPDType()
 
-	if !diskSupportsIopsAndThroughput[diskType] {
+	if !diskSupportsIopsChange[diskType] && !diskSupportsThroughputChange[diskType] {
 		return nil, status.Errorf(codes.InvalidArgument, "Failed to modify volume: modifications not supported for disk type %s", diskType)
 	}
 

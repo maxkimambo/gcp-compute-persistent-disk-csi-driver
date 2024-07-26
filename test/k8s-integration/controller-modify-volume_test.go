@@ -10,9 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -103,11 +101,11 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 			kubeConfigPath = os.Getenv("HOME") + "/.kube/config"
 		}
 
-		projectName = strings.Trim(os.Getenv("PROJECT"), "\n")
+		projectName = os.Getenv("PROJECT")
 		Expect(projectName).ToNot(Equal(""))
 
 		credsPath = os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")
-		filepath.Clean(credsPath)
+		Expect(credsPath).ToNot(Equal(""))
 
 		// Setup clients
 		config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
@@ -136,6 +134,9 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 	})
 
 	Context("Updates to hyperdisks", func() {
+		/*
+			TODO: add passing/failing tests for HdT, HdX. For example, for HdT, add iops to vac and expect error
+		*/
 		It("HdB should pass with normal constraints", func() {
 			initialSize := "64Gi"
 			initialIops := "3000"
