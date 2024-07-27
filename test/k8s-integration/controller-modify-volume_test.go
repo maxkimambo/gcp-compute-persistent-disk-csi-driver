@@ -121,7 +121,7 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 
 		// Generate unique names for the created resources
 		suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-		fmt.Printf("The current time is %s\n", suffix)
+		fmt.Printf("The suffixes for the resources is %s\n", suffix)
 		storageClassName = storageClassPrefix + suffix
 		vacName1 = vac1Prefix + suffix
 		vacName2 = vac2Prefix + suffix
@@ -137,6 +137,63 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		/*
 			TODO: add passing/failing tests for HdT, HdX. For example, for HdT, add iops to vac and expect error
 		*/
+		It("HdT should pass with normal constraints", func() {
+			initialSize := "2048Gi"
+			initialThroughput := "30"
+
+			err := createStorageClass(clientset, storageClassName, "hyperdisk-throughput", nil, &initialThroughput, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupStorageClass(clientset, storageClassName, ctx)
+			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
+
+			err = createVac(storageClient, vacName1, nil, &initialThroughput, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupVac(storageClient, vacName1, ctx)
+			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
+
+			updatedThroughput := "40"
+			err = createVac(storageClient, vacName2, nil, &updatedThroughput, ctx)
+			defer cleanupVac(storageClient, vacName2, ctx)
+			Expect(err).To(BeNil())
+
+			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupPvc(clientset, pvcName, ctx)
+			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
+
+			err = createPod(clientset, podName, pvcName, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupPod(clientset, podName, ctx)
+			fmt.Printf("Made it after creating the Pod %s\n", podName)
+
+			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
+
+			diskInfo := DiskInfo{
+				pvName:      pvName,
+				projectName: projectName,
+				zone:        zoneName,
+			}
+			_, throughput, err := getMetadataFromPV(computeClient, diskInfo, false /* getIops */, true, ctx)
+			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
+
+			err = patchPvc(clientset, pvcName, vacName2, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The code made it past patching the pv!")
+
+			err = waitUntilUpdate(computeClient, 11, diskInfo, nil, &throughput, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The PV updated the metadata!")
+
+			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
+			Expect(err).To(BeNil())
+			Expect(currentVacName).To(Equal(vacName2))
+
+			_, throughput, err = getMetadataFromPV(computeClient, diskInfo, false, true, ctx)
+			Expect(strconv.FormatInt(throughput, 10)).To(Equal(updatedThroughput))
+		})
+
 		It("HdB should pass with normal constraints", func() {
 			initialSize := "64Gi"
 			initialIops := "3000"
@@ -168,7 +225,7 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 			defer cleanupPod(clientset, podName, ctx)
 			fmt.Printf("Made it after creating the Pod %s\n", podName)
 
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, ctx)
+			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
 			Expect(err).To(BeNil())
 			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
 
@@ -229,7 +286,7 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 			defer cleanupPod(clientset, podName, ctx)
 			fmt.Printf("Made it after creating the Pod %s\n", podName)
 
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, ctx)
+			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
 			Expect(err).To(BeNil())
 			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
 
@@ -245,7 +302,7 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 			err = patchPvc(clientset, pvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = waitUntilUpdate(computeClient, 2, diskInfo, &iops, &throughput, ctx)
+			err = waitForVacUpdate(clientset, pvName, vacName1, ctx)
 			Expect(err).ToNot(BeNil())
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
@@ -385,8 +442,8 @@ func cleanupPod(clientset *kubernetes.Clientset, podName string, ctx context.Con
 	}
 }
 
-func getPVNameAndZone(clientset *kubernetes.Clientset, computeClient *computev1.DisksClient, projectName string, nsName string, pvcName string, ctx context.Context) (string, string, error) {
-	pvName, zones, err := getPVNameAndZones(clientset, nsName, pvcName, ctx)
+func getPVNameAndZone(clientset *kubernetes.Clientset, computeClient *computev1.DisksClient, projectName string, nsName string, pvcName string, timeout int64, ctx context.Context) (string, string, error) {
+	pvName, zones, err := getPVNameAndZones(clientset, nsName, pvcName, timeout)
 	if err != nil {
 		return "", "", err
 	}
@@ -397,7 +454,6 @@ func getPVNameAndZone(clientset *kubernetes.Clientset, computeClient *computev1.
 	}
 	// zones represents all possible zones the pv is in, iterate to see which zone the PV is in
 	for _, zone := range zones {
-		fmt.Printf("Testing zone %s\n", zone)
 		getDiskRequest.Zone = zone
 		pv, err := computeClient.Get(ctx, getDiskRequest)
 		if err == nil && pv != nil {
@@ -408,9 +464,11 @@ func getPVNameAndZone(clientset *kubernetes.Clientset, computeClient *computev1.
 }
 
 // getPVNameAndZones returns the PV name and possible zones (based off the node affinity) corresponding to the pvcName in namespace nsName.
-func getPVNameAndZones(clientset *kubernetes.Clientset, nsName string, pvcName string, ctx context.Context) (string, []string, error) {
+func getPVNameAndZones(clientset *kubernetes.Clientset, nsName string, pvcName string, timeout int64) (string, []string, error) {
 	pvName := ""
-	pvcErr := wait.PollUntilContextCancel(ctx, 60*time.Second, false, func(ctx context.Context) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+	pvcErr := wait.PollUntilContextCancel(ctx, 5*time.Second, false, func(ctx context.Context) (bool, error) {
 		pvc, err := clientset.CoreV1().PersistentVolumeClaims(nsName).Get(ctx, pvcName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -428,7 +486,7 @@ func getPVNameAndZones(clientset *kubernetes.Clientset, nsName string, pvcName s
 		return "", nil, pvcErr
 	}
 	var zoneNames []string
-	pvErr := wait.PollUntilContextCancel(ctx, 30*time.Second, false, func(ctx context.Context) (bool, error) {
+	pvErr := wait.PollUntilContextCancel(ctx, 5*time.Second, true, func(ctx context.Context) (bool, error) {
 		pv, err := clientset.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -483,7 +541,7 @@ func getVacFromPV(clientset *kubernetes.Clientset, pvName string, ctx context.Co
 		return "", err
 	}
 	vacName := pv.Spec.VolumeAttributesClassName
-	if *vacName == "" {
+	if vacName == nil || *vacName == "" {
 		return "", fmt.Errorf("Could not get the VolumeAttributesClassName.")
 	}
 	return *vacName, nil
@@ -521,6 +579,22 @@ func waitUntilUpdate(computeClient *computev1.DisksClient, numMinutes int, diskI
 			return true, nil
 		}
 		if initialThroughput != nil && *initialThroughput != throughput {
+			return true, nil
+		}
+		return false, nil
+	})
+	return err
+}
+
+func waitForVacUpdate(clientset *kubernetes.Clientset, pvName string, vacName string, ctx context.Context) error {
+	contextTimeout, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	err := wait.PollUntilContextCancel(contextTimeout, 10*time.Second, true, func(ctx context.Context) (bool, error) {
+		pvVacName, err := getVacFromPV(clientset, pvName, ctx)
+		if err != nil {
+			return false, err
+		}
+		if pvVacName != "" && pvVacName != vacName {
 			return true, nil
 		}
 		return false, nil
