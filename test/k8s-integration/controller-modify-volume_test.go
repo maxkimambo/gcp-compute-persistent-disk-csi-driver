@@ -9,8 +9,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +40,7 @@ import (
 const (
 	defaultNamespace   = "default"
 	driverName         = "pd.csi.storage.gke.io"
+	driverNamespace    = "gce-pd-csi-driver"
 	storageClassPrefix = "test-storageclass-"
 	pvcPrefix          = "test-pvc-"
 	vac1Prefix         = "test-vac1-"
@@ -137,6 +140,57 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		/*
 			TODO: add passing/failing tests for HdT, HdX. For example, for HdT, add iops to vac and expect error
 		*/
+		It("HdT should fail when providing IOPS in VAC", func() {
+			initialSize := "2048Gi"
+			initialThroughput := "30"
+
+			err := createStorageClass(clientset, storageClassName, "hyperdisk-throughput", nil, &initialThroughput, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupStorageClass(clientset, storageClassName, ctx)
+			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
+
+			err = createVac(storageClient, vacName1, nil, &initialThroughput, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupVac(storageClient, vacName1, ctx)
+			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
+
+			provisionedIops := "130"
+			updatedThroughput := "40"
+			err = createVac(storageClient, vacName2, &provisionedIops, &updatedThroughput, ctx)
+			defer cleanupVac(storageClient, vacName2, ctx)
+			Expect(err).To(BeNil())
+
+			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			Expect(err).To(BeNil())
+			defer cleanupPvc(clientset, pvcName, ctx)
+			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
+
+			err = createPod(clientset, podName, pvcName, ctx)
+			Expect(err).To(BeNil())
+			// defer cleanupPod(clientset, podName, ctx)
+			fmt.Printf("Made it after creating the Pod %s\n", podName)
+
+			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
+
+			diskInfo := DiskInfo{
+				pvName:      pvName,
+				projectName: projectName,
+				zone:        zoneName,
+			}
+			_, throughput, err := getMetadataFromPV(computeClient, diskInfo, false /* getIops */, true, ctx)
+			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
+
+			err = patchPvc(clientset, pvcName, vacName2, ctx)
+			Expect(err).To(BeNil())
+			fmt.Printf("The code made it past patching the pv!")
+
+			errExists, err := checkForError(clientset, "Cannot specify IOPS for disk type hyperdisk-throughput", ctx)
+			Expect(err).To(BeNil())
+			Expect(errExists).To(Equal(true))
+		})
+
 		It("HdT should pass with normal constraints", func() {
 			initialSize := "2048Gi"
 			initialThroughput := "30"
@@ -491,7 +545,6 @@ func getPVNameAndZones(clientset *kubernetes.Clientset, nsName string, pvcName s
 		if err != nil {
 			return false, err
 		}
-		// TODO: find a way to clean this up
 		if pv.Spec.NodeAffinity != nil && pv.Spec.NodeAffinity.Required != nil && pv.Spec.NodeAffinity.Required.NodeSelectorTerms != nil {
 			if len(pv.Spec.NodeAffinity.Required.NodeSelectorTerms) > 0 {
 				for _, nodeSelectorTerm := range pv.Spec.NodeAffinity.Required.NodeSelectorTerms {
@@ -506,7 +559,7 @@ func getPVNameAndZones(clientset *kubernetes.Clientset, nsName string, pvcName s
 				}
 			}
 		}
-		return true, nil
+		return false, nil
 	})
 	if pvErr != nil {
 		return "", nil, pvErr
@@ -600,4 +653,27 @@ func waitForVacUpdate(clientset *kubernetes.Clientset, pvName string, vacName st
 		return false, nil
 	})
 	return err
+}
+
+func checkForError(clientset *kubernetes.Clientset, message string, ctx context.Context) (bool, error) {
+	podList, err := clientset.CoreV1().Pods(driverNamespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+	podLogOptions := &corev1.PodLogOptions{
+		Container: "gce-pd-driver",
+	}
+	for _, pod := range podList.Items {
+		logRequest := clientset.CoreV1().Pods(driverNamespace).GetLogs(pod.Name, podLogOptions)
+		logs, err := logRequest.Stream(ctx)
+		if err != nil {
+			continue
+		}
+		messages, err := io.ReadAll(logs)
+		fullLogs := string(messages[:])
+		if strings.Contains(fullLogs, message) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

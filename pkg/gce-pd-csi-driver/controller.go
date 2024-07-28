@@ -782,7 +782,6 @@ func (gceCS *GCEControllerServer) ControllerModifyVolume(ctx context.Context, re
 	}
 
 	volumeModifyParams, err := common.ExtractModifyVolumeParameters(req.GetMutableParameters())
-	klog.V(4).Info("Volume Modify Parameters: ", volumeModifyParams)
 	if err != nil {
 		klog.Errorf("Failed to extract parameters for volume %s: %v", volumeID, err)
 		return nil, status.Errorf(codes.InvalidArgument, "Invalid parameters: %v", err)
@@ -801,8 +800,16 @@ func (gceCS *GCEControllerServer) ControllerModifyVolume(ctx context.Context, re
 	}
 	diskType = existingDisk.GetPDType()
 
-	if !diskSupportsIopsChange[diskType] && !diskSupportsThroughputChange[diskType] {
+	supportsIopsChange := diskSupportsIopsChange[diskType]
+	supportsThroughputChange := diskSupportsThroughputChange[diskType]
+	if !supportsIopsChange && !supportsThroughputChange {
 		return nil, status.Errorf(codes.InvalidArgument, "Failed to modify volume: modifications not supported for disk type %s", diskType)
+	}
+	if !supportsIopsChange && volumeModifyParams.IOPS != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "Cannot specify IOPS for disk type %s", diskType)
+	}
+	if !supportsThroughputChange && volumeModifyParams.Throughput != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "Cannot specify throughput for disk type %s", diskType)
 	}
 
 	// TODO : not sure how this metric should be reported
