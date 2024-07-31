@@ -55,6 +55,7 @@ type TestMetadata struct {
 	InitialSize       string
 	StorageClassName  string
 	VacName1          string
+	VacName2          string
 	PvcName           string
 	PodName           string
 }
@@ -132,32 +133,21 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 
 	Context("Updates to hyperdisks", func() {
 		It("HdB should pass with normal constraints", func() {
-			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-			fmt.Printf("The suffixes for the resources is %s\n", suffix)
-			vacName2 := vac2Prefix + suffix
 			initialIops := "3000"
 			initialThroughput := "150"
-			testMetadata := TestMetadata{
-				DiskType:          "hyperdisk-balanced",
-				InitialSize:       "64Gi",
-				InitialIops:       &initialIops,
-				InitialThroughput: &initialThroughput,
-				StorageClassName:  storageClassPrefix + suffix,
-				VacName1:          vac1Prefix + suffix,
-				PvcName:           pvcPrefix + suffix,
-				PodName:           podPrefix + suffix,
-			}
+			testMetadata := createTestMetadata("hyperdisk-balanced", "64Gi", &initialIops, &initialThroughput)
+
 			pvName, diskInfo, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
 			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
 
 			updatedIops := "3013"
 			updatedThroughput := "181"
-			err = createVac(storageClient, vacName2, &updatedIops, &updatedThroughput, ctx)
-			defer cleanupVac(storageClient, vacName2, ctx)
+			err = createVac(storageClient, testMetadata.VacName2, &updatedIops, &updatedThroughput, ctx)
+			defer cleanupVac(storageClient, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
 			err = waitUntilUpdate(computeClient, 11, diskInfo, testMetadata.InitialIops, testMetadata.InitialThroughput, ctx)
@@ -165,7 +155,7 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
-			Expect(currentVacName).To(Equal(vacName2))
+			Expect(currentVacName).To(Equal(testMetadata.VacName2))
 
 			iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
 			Expect(strconv.FormatInt(iops, 10)).To(Equal(updatedIops))
@@ -173,30 +163,19 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		})
 
 		It("HdB with invalid update parameters doesn't update PV", func() {
-			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-			fmt.Printf("The suffixes for the resources is %s\n", suffix)
-			vacName2 := vac2Prefix + suffix
 			initialIops := "3000"
 			initialThroughput := "150"
-			testMetadata := TestMetadata{
-				DiskType:          "hyperdisk-balanced",
-				InitialSize:       "64Gi",
-				InitialIops:       &initialIops,
-				InitialThroughput: &initialThroughput,
-				StorageClassName:  storageClassPrefix + suffix,
-				VacName1:          vac1Prefix + suffix,
-				PvcName:           pvcPrefix + suffix,
-				PodName:           podPrefix + suffix,
-			}
+			testMetadata := createTestMetadata("hyperdisk-balanced", "64Gi", &initialIops, &initialThroughput)
+
 			pvName, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
 			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
 
 			updatedIops := "120000"
 			updatedThroughput := "150"
-			err = createVac(storageClient, vacName2, &updatedIops, &updatedThroughput, ctx)
+			err = createVac(storageClient, testMetadata.VacName2, &updatedIops, &updatedThroughput, ctx)
 
-			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
 			err = waitForVacUpdate(clientset, pvName, testMetadata.VacName1, ctx)
@@ -208,30 +187,19 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		})
 
 		It("HdT should pass with normal constraints", func() {
-			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-			fmt.Printf("The suffixes for the resources is %s\n", suffix)
-			vacName2 := vac2Prefix + suffix
 			initialThroughput := "30"
-			testMetadata := TestMetadata{
-				DiskType:          "hyperdisk-throughput",
-				InitialSize:       "2048Gi",
-				InitialIops:       nil,
-				InitialThroughput: &initialThroughput,
-				StorageClassName:  storageClassPrefix + suffix,
-				VacName1:          vac1Prefix + suffix,
-				PvcName:           pvcPrefix + suffix,
-				PodName:           podPrefix + suffix,
-			}
+			testMetadata := createTestMetadata("hyperdisk-throughput", "2048Gi", nil, &initialThroughput)
+
 			pvName, diskInfo, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
 			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
 
 			updatedThroughput := "40"
-			err = createVac(storageClient, vacName2, nil, &updatedThroughput, ctx)
-			defer cleanupVac(storageClient, vacName2, ctx)
+			err = createVac(storageClient, testMetadata.VacName2, nil, &updatedThroughput, ctx)
+			defer cleanupVac(storageClient, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
 			err = waitUntilUpdate(computeClient, 11, diskInfo, testMetadata.InitialIops, testMetadata.InitialThroughput, ctx)
@@ -239,38 +207,27 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
-			Expect(currentVacName).To(Equal(vacName2))
+			Expect(currentVacName).To(Equal(testMetadata.VacName2))
 
 			_, throughput, err := getMetadataFromPV(computeClient, diskInfo, false, true, ctx)
 			Expect(strconv.FormatInt(throughput, 10)).To(Equal(updatedThroughput))
 		})
 
 		It("HdT should fail when providing IOPS in VAC", func() {
-			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-			fmt.Printf("The suffixes for the resources is %s\n", suffix)
-			vacName2 := vac2Prefix + suffix
 			initialThroughput := "30"
-			testMetadata := TestMetadata{
-				DiskType:          "hyperdisk-throughput",
-				InitialSize:       "2048Gi",
-				InitialIops:       nil,
-				InitialThroughput: &initialThroughput,
-				StorageClassName:  storageClassPrefix + suffix,
-				VacName1:          vac1Prefix + suffix,
-				PvcName:           pvcPrefix + suffix,
-				PodName:           podPrefix + suffix,
-			}
+			testMetadata := createTestMetadata("hyperdisk-throughput", "2048Gi", nil, &initialThroughput)
+
 			_, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
 			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
 
 			provisionedIops := "130"
 			updatedThroughput := "40"
-			err = createVac(storageClient, vacName2, &provisionedIops, &updatedThroughput, ctx)
-			defer cleanupVac(storageClient, vacName2, ctx)
+			err = createVac(storageClient, testMetadata.VacName2, &provisionedIops, &updatedThroughput, ctx)
+			defer cleanupVac(storageClient, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
 			errExists, err := checkForError(clientset, "Cannot specify IOPS for disk type hyperdisk-throughput", ctx)
@@ -279,25 +236,14 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		})
 
 		It("HdT with invalid update parameters doesn't update PV", func() {
-			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-			fmt.Printf("The suffixes for the resources is %s\n", suffix)
-			vacName2 := vac2Prefix + suffix
 			initialThroughput := "30"
-			testMetadata := TestMetadata{
-				DiskType:          "hyperdisk-throughput",
-				InitialSize:       "2048Gi",
-				InitialIops:       nil,
-				InitialThroughput: &initialThroughput,
-				StorageClassName:  storageClassPrefix + suffix,
-				VacName1:          vac1Prefix + suffix,
-				PvcName:           pvcPrefix + suffix,
-				PodName:           podPrefix + suffix,
-			}
+			testMetadata := createTestMetadata("hyperdisk-throughput", "2048Gi", nil, &initialThroughput)
+
 			pvName, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
 			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
 
-			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
 			err = waitForVacUpdate(clientset, pvName, testMetadata.VacName1, ctx)
@@ -309,30 +255,19 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		})
 
 		It("HdX should pass with normal constraints", func() {
-			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-			fmt.Printf("The suffixes for the resources is %s\n", suffix)
-			vacName2 := vac2Prefix + suffix
 			initialIops := "130"
-			testMetadata := TestMetadata{
-				DiskType:          "hyperdisk-extreme",
-				InitialSize:       "64Gi",
-				InitialIops:       &initialIops,
-				InitialThroughput: nil,
-				StorageClassName:  storageClassPrefix + suffix,
-				VacName1:          vac1Prefix + suffix,
-				PvcName:           pvcPrefix + suffix,
-				PodName:           podPrefix + suffix,
-			}
+			testMetadata := createTestMetadata("hyperdisk-extreme", "64Gi", &initialIops, nil)
+
 			pvName, diskInfo, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
 			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
 
 			updatedIops := "140"
-			err = createVac(storageClient, vacName2, &updatedIops, nil, ctx)
-			defer cleanupVac(storageClient, vacName2, ctx)
+			err = createVac(storageClient, testMetadata.VacName2, &updatedIops, nil, ctx)
+			defer cleanupVac(storageClient, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
 			err = waitUntilUpdate(computeClient, 11, diskInfo, testMetadata.InitialIops, nil, ctx)
@@ -340,38 +275,27 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
-			Expect(currentVacName).To(Equal(vacName2))
+			Expect(currentVacName).To(Equal(testMetadata.VacName2))
 
 			iops, _, err := getMetadataFromPV(computeClient, diskInfo, true, false /* getThroughput */, ctx)
 			Expect(strconv.FormatInt(iops, 10)).To(Equal(updatedIops))
 		})
 
 		It("HdX should fail when providing throughput in VAC", func() {
-			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-			fmt.Printf("The suffixes for the resources is %s\n", suffix)
-			vacName2 := vac2Prefix + suffix
 			initialIops := "130"
-			testMetadata := TestMetadata{
-				DiskType:          "hyperdisk-extreme",
-				InitialSize:       "64Gi",
-				InitialIops:       &initialIops,
-				InitialThroughput: nil,
-				StorageClassName:  storageClassPrefix + suffix,
-				VacName1:          vac1Prefix + suffix,
-				PvcName:           pvcPrefix + suffix,
-				PodName:           podPrefix + suffix,
-			}
+			testMetadata := createTestMetadata("hyperdisk-extreme", "64Gi", &initialIops, nil)
+
 			_, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
 			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
 
 			updatedIops := "150"
 			provisionedThroughput := "40"
-			err = createVac(storageClient, vacName2, &updatedIops, &provisionedThroughput, ctx)
-			defer cleanupVac(storageClient, vacName2, ctx)
+			err = createVac(storageClient, testMetadata.VacName2, &updatedIops, &provisionedThroughput, ctx)
+			defer cleanupVac(storageClient, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
 			errExists, err := checkForError(clientset, "Cannot specify throughput for disk type hyperdisk-extreme", ctx)
@@ -380,24 +304,13 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		})
 
 		It("HdX with invalid update parameters doesn't update PV", func() {
-			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-			fmt.Printf("The suffixes for the resources is %s\n", suffix)
-			vacName2 := vac2Prefix + suffix
 			initialIops := "130"
-			testMetadata := TestMetadata{
-				DiskType:          "hyperdisk-extreme",
-				InitialSize:       "64Gi",
-				InitialIops:       &initialIops,
-				InitialThroughput: nil,
-				StorageClassName:  storageClassPrefix + suffix,
-				VacName1:          vac1Prefix + suffix,
-				PvcName:           pvcPrefix + suffix,
-				PodName:           podPrefix + suffix,
-			}
+			testMetadata := createTestMetadata("hyperdisk-extreme", "64Gi", &initialIops, nil)
+
 			pvName, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
 			// defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 
-			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, testMetadata.VacName2, ctx)
 			Expect(err).To(BeNil())
 
 			err = waitForVacUpdate(clientset, pvName, testMetadata.VacName1, ctx)
@@ -409,6 +322,23 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		})
 	})
 })
+
+func createTestMetadata(diskType string, initialSize string, initialIops *string, initialThroughput *string) TestMetadata {
+	suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+	fmt.Printf("The suffixes for the resources is %s\n", suffix)
+	testMetadata := TestMetadata{
+		DiskType:          diskType,
+		InitialSize:       initialSize,
+		InitialIops:       initialIops,
+		InitialThroughput: initialThroughput,
+		StorageClassName:  storageClassPrefix + suffix,
+		VacName1:          vac1Prefix + suffix,
+		VacName2:          vac2Prefix + suffix,
+		PvcName:           pvcPrefix + suffix,
+		PodName:           podPrefix + suffix,
+	}
+	return testMetadata
+}
 
 func createPVWithDynamicProvisioning(
 	clientset *kubernetes.Clientset,
