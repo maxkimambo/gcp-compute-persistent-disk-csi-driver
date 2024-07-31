@@ -1,8 +1,3 @@
-/*
-TODO: Fill out this section
-
-Make sure to be authenticated with gcloud to the project that is running?
-*/
 package main
 
 import (

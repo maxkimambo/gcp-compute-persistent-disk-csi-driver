@@ -361,10 +361,16 @@ func (gceCS *GCEControllerServer) createVolumeInternal(ctx context.Context, req 
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "Invalid mutable parameters: %v", err)
 		}
-		if supportsIopsChange && p.IOPS != nil {
+		if p.IOPS != nil {
+			if !supportsIopsChange {
+				return nil, status.Errorf(codes.InvalidArgument, "Cannot specify IOPS for disk type %s", params.DiskType)
+			}
 			params.ProvisionedIOPSOnCreate = *p.IOPS
 		}
-		if supportsThroughputChange && p.Throughput != nil {
+		if p.Throughput != nil {
+			if !supportsThroughputChange {
+				return nil, status.Errorf(codes.InvalidArgument, "Cannot specify throughput for disk type %s", params.DiskType)
+			}
 			params.ProvisionedThroughputOnCreate = *p.Throughput
 		}
 	} else {
