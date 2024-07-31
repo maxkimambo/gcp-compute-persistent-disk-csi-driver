@@ -47,6 +47,18 @@ const (
 	zoneRequest    = "https://metadata.google.internal/computeMetadata/v1/instance/zone"
 )
 
+// Each test begins by creating a PV with dynamic provisioning. This contains all necessary parameters
+type TestMetadata struct {
+	DiskType          string
+	InitialIops       *string
+	InitialThroughput *string
+	InitialSize       string
+	StorageClassName  string
+	VacName1          string
+	PvcName           string
+	PodName           string
+}
+
 type DiskInfo struct {
 	projectName string
 	pvName      string
@@ -75,14 +87,9 @@ func TestControllerModifyVolume(t *testing.T) {
 
 var _ = Describe("ControllerModifyVolume tests", func() {
 	var (
-		credsPath        string
-		kubeConfigPath   string
-		projectName      string
-		storageClassName string
-		vacName1         string
-		vacName2         string
-		pvcName          string
-		podName          string
+		projectName    string
+		credsPath      string
+		kubeConfigPath string
 
 		ctx               context.Context
 		clientset         *kubernetes.Clientset
@@ -117,14 +124,6 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		computeClient, err = computev1.NewDisksRESTClient(ctx, credentialsOption)
 		Expect(err).To(BeNil())
 
-		// Generate unique names for the created resources
-		suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
-		fmt.Printf("The suffixes for the resources is %s\n", suffix)
-		storageClassName = storageClassPrefix + suffix
-		vacName1 = vac1Prefix + suffix
-		vacName2 = vac2Prefix + suffix
-		pvcName = pvcPrefix + suffix
-		podName = podPrefix + suffix
 	})
 
 	AfterEach(func() {
@@ -133,19 +132,24 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 
 	Context("Updates to hyperdisks", func() {
 		It("HdB should pass with normal constraints", func() {
-			initialSize := "64Gi"
+			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+			fmt.Printf("The suffixes for the resources is %s\n", suffix)
+			vacName2 := vac2Prefix + suffix
 			initialIops := "3000"
 			initialThroughput := "150"
-
-			err := createStorageClass(clientset, storageClassName, "hyperdisk-balanced", &initialIops, &initialThroughput, ctx)
+			testMetadata := TestMetadata{
+				DiskType:          "hyperdisk-balanced",
+				InitialSize:       "64Gi",
+				InitialIops:       &initialIops,
+				InitialThroughput: &initialThroughput,
+				StorageClassName:  storageClassPrefix + suffix,
+				VacName1:          vac1Prefix + suffix,
+				PvcName:           pvcPrefix + suffix,
+				PodName:           podPrefix + suffix,
+			}
+			pvName, diskInfo, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
+			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupStorageClass(clientset, storageClassName, ctx)
-			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
-
-			err = createVac(storageClient, vacName1, &initialIops, &initialThroughput, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupVac(storageClient, vacName1, ctx)
-			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
 
 			updatedIops := "3013"
 			updatedThroughput := "181"
@@ -153,171 +157,112 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 			defer cleanupVac(storageClient, vacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupPvc(clientset, pvcName, ctx)
-			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
 
-			err = createPod(clientset, podName, pvcName, ctx)
+			err = waitUntilUpdate(computeClient, 11, diskInfo, testMetadata.InitialIops, testMetadata.InitialThroughput, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupPod(clientset, podName, ctx)
-			fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-
-			diskInfo := DiskInfo{
-				pvName:      pvName,
-				projectName: projectName,
-				zone:        zoneName,
-			}
-			iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
-			Expect(strconv.FormatInt(iops, 10)).To(Equal(initialIops))
-			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
-
-			err = patchPvc(clientset, pvcName, vacName2, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The code made it past patching the pv!")
-
-			err = waitUntilUpdate(computeClient, 11, diskInfo, &iops, &throughput, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV updated the metadata!")
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
 			Expect(currentVacName).To(Equal(vacName2))
 
-			iops, throughput, err = getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
+			iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
 			Expect(strconv.FormatInt(iops, 10)).To(Equal(updatedIops))
 			Expect(strconv.FormatInt(throughput, 10)).To(Equal(updatedThroughput))
 		})
 
 		It("HdB with invalid update parameters doesn't update PV", func() {
-			initialSize := "64Gi"
+			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+			fmt.Printf("The suffixes for the resources is %s\n", suffix)
+			vacName2 := vac2Prefix + suffix
 			initialIops := "3000"
 			initialThroughput := "150"
-
-			err := createStorageClass(clientset, storageClassName, "hyperdisk-balanced", &initialIops, &initialThroughput, ctx)
+			testMetadata := TestMetadata{
+				DiskType:          "hyperdisk-balanced",
+				InitialSize:       "64Gi",
+				InitialIops:       &initialIops,
+				InitialThroughput: &initialThroughput,
+				StorageClassName:  storageClassPrefix + suffix,
+				VacName1:          vac1Prefix + suffix,
+				PvcName:           pvcPrefix + suffix,
+				PodName:           podPrefix + suffix,
+			}
+			pvName, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
+			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupStorageClass(clientset, storageClassName, ctx)
-			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
-
-			err = createVac(storageClient, vacName1, &initialIops, &initialThroughput, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupVac(storageClient, vacName1, ctx)
-			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
 
 			updatedIops := "120000"
 			updatedThroughput := "150"
 			err = createVac(storageClient, vacName2, &updatedIops, &updatedThroughput, ctx)
-			defer cleanupVac(storageClient, vacName2, ctx)
+
+			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupPvc(clientset, pvcName, ctx)
-			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
-
-			err = createPod(clientset, podName, pvcName, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupPod(clientset, podName, ctx)
-			fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-
-			diskInfo := DiskInfo{
-				pvName:      pvName,
-				projectName: projectName,
-				zone:        zoneName,
-			}
-			iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, true, true, ctx)
-			Expect(strconv.FormatInt(iops, 10)).To(Equal(initialIops))
-			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
-
-			err = patchPvc(clientset, pvcName, vacName2, ctx)
-			Expect(err).To(BeNil())
-
-			err = waitForVacUpdate(clientset, pvName, vacName1, ctx)
+			err = waitForVacUpdate(clientset, pvName, testMetadata.VacName1, ctx)
 			Expect(err).ToNot(BeNil())
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
-			Expect(currentVacName).To(Equal(vacName1))
+			Expect(currentVacName).To(Equal(testMetadata.VacName1))
 		})
 
 		It("HdT should pass with normal constraints", func() {
-			initialSize := "2048Gi"
+			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+			fmt.Printf("The suffixes for the resources is %s\n", suffix)
+			vacName2 := vac2Prefix + suffix
 			initialThroughput := "30"
-
-			err := createStorageClass(clientset, storageClassName, "hyperdisk-throughput", nil, &initialThroughput, ctx)
+			testMetadata := TestMetadata{
+				DiskType:          "hyperdisk-throughput",
+				InitialSize:       "2048Gi",
+				InitialIops:       nil,
+				InitialThroughput: &initialThroughput,
+				StorageClassName:  storageClassPrefix + suffix,
+				VacName1:          vac1Prefix + suffix,
+				PvcName:           pvcPrefix + suffix,
+				PodName:           podPrefix + suffix,
+			}
+			pvName, diskInfo, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
+			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupStorageClass(clientset, storageClassName, ctx)
-			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
-
-			err = createVac(storageClient, vacName1, nil, &initialThroughput, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupVac(storageClient, vacName1, ctx)
-			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
 
 			updatedThroughput := "40"
 			err = createVac(storageClient, vacName2, nil, &updatedThroughput, ctx)
 			defer cleanupVac(storageClient, vacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupPvc(clientset, pvcName, ctx)
-			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
 
-			err = createPod(clientset, podName, pvcName, ctx)
+			err = waitUntilUpdate(computeClient, 11, diskInfo, testMetadata.InitialIops, testMetadata.InitialThroughput, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupPod(clientset, podName, ctx)
-			fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-
-			diskInfo := DiskInfo{
-				pvName:      pvName,
-				projectName: projectName,
-				zone:        zoneName,
-			}
-			_, throughput, err := getMetadataFromPV(computeClient, diskInfo, false /* getIops */, true, ctx)
-			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
-
-			err = patchPvc(clientset, pvcName, vacName2, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The code made it past patching the pv!")
-
-			err = waitUntilUpdate(computeClient, 11, diskInfo, nil, &throughput, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV updated the metadata!")
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
 			Expect(currentVacName).To(Equal(vacName2))
 
-			_, throughput, err = getMetadataFromPV(computeClient, diskInfo, false, true, ctx)
+			_, throughput, err := getMetadataFromPV(computeClient, diskInfo, false, true, ctx)
 			Expect(strconv.FormatInt(throughput, 10)).To(Equal(updatedThroughput))
 		})
 
 		It("HdT should fail when providing IOPS in VAC", func() {
-			initialSize := "2048Gi"
+			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+			fmt.Printf("The suffixes for the resources is %s\n", suffix)
+			vacName2 := vac2Prefix + suffix
 			initialThroughput := "30"
-
-			err := createStorageClass(clientset, storageClassName, "hyperdisk-throughput", nil, &initialThroughput, ctx)
+			testMetadata := TestMetadata{
+				DiskType:          "hyperdisk-throughput",
+				InitialSize:       "2048Gi",
+				InitialIops:       nil,
+				InitialThroughput: &initialThroughput,
+				StorageClassName:  storageClassPrefix + suffix,
+				VacName1:          vac1Prefix + suffix,
+				PvcName:           pvcPrefix + suffix,
+				PodName:           podPrefix + suffix,
+			}
+			_, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
+			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupStorageClass(clientset, storageClassName, ctx)
-			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
-
-			err = createVac(storageClient, vacName1, nil, &initialThroughput, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupVac(storageClient, vacName1, ctx)
-			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
 
 			provisionedIops := "130"
 			updatedThroughput := "40"
@@ -325,31 +270,8 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 			defer cleanupVac(storageClient, vacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupPvc(clientset, pvcName, ctx)
-			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
-
-			err = createPod(clientset, podName, pvcName, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupPod(clientset, podName, ctx)
-			fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-
-			diskInfo := DiskInfo{
-				pvName:      pvName,
-				projectName: projectName,
-				zone:        zoneName,
-			}
-			_, throughput, err := getMetadataFromPV(computeClient, diskInfo, false /* getIops */, true, ctx)
-			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
-
-			err = patchPvc(clientset, pvcName, vacName2, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The code made it past patching the pv!\n")
 
 			errExists, err := checkForError(clientset, "Cannot specify IOPS for disk type hyperdisk-throughput", ctx)
 			Expect(err).To(BeNil())
@@ -357,160 +279,100 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		})
 
 		It("HdT with invalid update parameters doesn't update PV", func() {
-			initialSize := "2048Gi"
+			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+			fmt.Printf("The suffixes for the resources is %s\n", suffix)
+			vacName2 := vac2Prefix + suffix
 			initialThroughput := "30"
-
-			err := createStorageClass(clientset, storageClassName, "hyperdisk-throughput", nil, &initialThroughput, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupStorageClass(clientset, storageClassName, ctx)
-			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
-
-			err = createVac(storageClient, vacName1, nil, &initialThroughput, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupVac(storageClient, vacName1, ctx)
-			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
-
-			updatedThroughput := "200"
-			err = createVac(storageClient, vacName2, nil, &updatedThroughput, ctx)
-			defer cleanupVac(storageClient, vacName2, ctx)
-			Expect(err).To(BeNil())
-
-			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupPvc(clientset, pvcName, ctx)
-			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
-
-			err = createPod(clientset, podName, pvcName, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupPod(clientset, podName, ctx)
-			fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-
-			diskInfo := DiskInfo{
-				pvName:      pvName,
-				projectName: projectName,
-				zone:        zoneName,
+			testMetadata := TestMetadata{
+				DiskType:          "hyperdisk-throughput",
+				InitialSize:       "2048Gi",
+				InitialIops:       nil,
+				InitialThroughput: &initialThroughput,
+				StorageClassName:  storageClassPrefix + suffix,
+				VacName1:          vac1Prefix + suffix,
+				PvcName:           pvcPrefix + suffix,
+				PodName:           podPrefix + suffix,
 			}
-			_, throughput, err := getMetadataFromPV(computeClient, diskInfo, false /* getIops */, true, ctx)
-			Expect(strconv.FormatInt(throughput, 10)).To(Equal(initialThroughput))
-
-			err = patchPvc(clientset, pvcName, vacName2, ctx)
+			pvName, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
+			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
-			fmt.Printf("The code made it past patching the pv!")
 
-			err = waitForVacUpdate(clientset, pvName, vacName1, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
+			Expect(err).To(BeNil())
+
+			err = waitForVacUpdate(clientset, pvName, testMetadata.VacName1, ctx)
 			Expect(err).ToNot(BeNil())
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
-			Expect(currentVacName).To(Equal(vacName1))
+			Expect(currentVacName).To(Equal(testMetadata.VacName1))
 		})
 
 		It("HdX should pass with normal constraints", func() {
-			initialSize := "64Gi"
+			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+			fmt.Printf("The suffixes for the resources is %s\n", suffix)
+			vacName2 := vac2Prefix + suffix
 			initialIops := "130"
-
-			err := createStorageClass(clientset, storageClassName, "hyperdisk-extreme", &initialIops, nil, ctx)
+			testMetadata := TestMetadata{
+				DiskType:          "hyperdisk-extreme",
+				InitialSize:       "64Gi",
+				InitialIops:       &initialIops,
+				InitialThroughput: nil,
+				StorageClassName:  storageClassPrefix + suffix,
+				VacName1:          vac1Prefix + suffix,
+				PvcName:           pvcPrefix + suffix,
+				PodName:           podPrefix + suffix,
+			}
+			pvName, diskInfo, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
+			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupStorageClass(clientset, storageClassName, ctx)
-			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
-
-			err = createVac(storageClient, vacName1, &initialIops, nil, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupVac(storageClient, vacName1, ctx)
-			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
 
 			updatedIops := "140"
 			err = createVac(storageClient, vacName2, &updatedIops, nil, ctx)
 			defer cleanupVac(storageClient, vacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupPvc(clientset, pvcName, ctx)
-			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
 
-			err = createPod(clientset, podName, pvcName, ctx)
+			err = waitUntilUpdate(computeClient, 11, diskInfo, testMetadata.InitialIops, nil, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupPod(clientset, podName, ctx)
-			fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-
-			diskInfo := DiskInfo{
-				pvName:      pvName,
-				projectName: projectName,
-				zone:        zoneName,
-			}
-			iops, _, err := getMetadataFromPV(computeClient, diskInfo, true, false /* getThroughput */, ctx)
-			Expect(strconv.FormatInt(iops, 10)).To(Equal(initialIops))
-
-			err = patchPvc(clientset, pvcName, vacName2, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The code made it past patching the pv!")
-
-			err = waitUntilUpdate(computeClient, 11, diskInfo, &iops, nil, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV updated the metadata!")
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
 			Expect(currentVacName).To(Equal(vacName2))
 
-			iops, _, err = getMetadataFromPV(computeClient, diskInfo, true, false /* getThroughput */, ctx)
+			iops, _, err := getMetadataFromPV(computeClient, diskInfo, true, false /* getThroughput */, ctx)
 			Expect(strconv.FormatInt(iops, 10)).To(Equal(updatedIops))
 		})
 
 		It("HdX should fail when providing throughput in VAC", func() {
-			initialSize := "64Gi"
+			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+			fmt.Printf("The suffixes for the resources is %s\n", suffix)
+			vacName2 := vac2Prefix + suffix
 			initialIops := "130"
-
-			err := createStorageClass(clientset, storageClassName, "hyperdisk-extreme", &initialIops, nil, ctx)
+			testMetadata := TestMetadata{
+				DiskType:          "hyperdisk-extreme",
+				InitialSize:       "64Gi",
+				InitialIops:       &initialIops,
+				InitialThroughput: nil,
+				StorageClassName:  storageClassPrefix + suffix,
+				VacName1:          vac1Prefix + suffix,
+				PvcName:           pvcPrefix + suffix,
+				PodName:           podPrefix + suffix,
+			}
+			_, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
+			defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupStorageClass(clientset, storageClassName, ctx)
-			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
 
-			err = createVac(storageClient, vacName1, &initialIops, nil, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupVac(storageClient, vacName1, ctx)
-			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
-
-			updatedIops := "140"
+			updatedIops := "150"
 			provisionedThroughput := "40"
 			err = createVac(storageClient, vacName2, &updatedIops, &provisionedThroughput, ctx)
 			defer cleanupVac(storageClient, vacName2, ctx)
 			Expect(err).To(BeNil())
 
-			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
-			defer cleanupPvc(clientset, pvcName, ctx)
-			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
-
-			err = createPod(clientset, podName, pvcName, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupPod(clientset, podName, ctx)
-			fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-
-			diskInfo := DiskInfo{
-				pvName:      pvName,
-				projectName: projectName,
-				zone:        zoneName,
-			}
-			iops, _, err := getMetadataFromPV(computeClient, diskInfo, true, false /* getThroughput */, ctx)
-			Expect(strconv.FormatInt(iops, 10)).To(Equal(initialIops))
-
-			err = patchPvc(clientset, pvcName, vacName2, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The code made it past patching the pv!\n")
 
 			errExists, err := checkForError(clientset, "Cannot specify throughput for disk type hyperdisk-extreme", ctx)
 			Expect(err).To(BeNil())
@@ -518,59 +380,95 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 		})
 
 		It("HdX with invalid update parameters doesn't update PV", func() {
-			initialSize := "64Gi"
+			suffix := strconv.FormatInt(time.Now().UnixMicro(), 10)
+			fmt.Printf("The suffixes for the resources is %s\n", suffix)
+			vacName2 := vac2Prefix + suffix
 			initialIops := "130"
-
-			err := createStorageClass(clientset, storageClassName, "hyperdisk-extreme", &initialIops, nil, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupStorageClass(clientset, storageClassName, ctx)
-			fmt.Printf("Made it after creating the StorageClass %s\n", storageClassName)
-
-			err = createVac(storageClient, vacName1, &initialIops, nil, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupVac(storageClient, vacName1, ctx)
-			fmt.Printf("Made it after creating the VolumeAttributesClass %s\n", vacName1)
-
-			updatedIops := "80000"
-			err = createVac(storageClient, vacName2, &updatedIops, nil, ctx)
-			defer cleanupVac(storageClient, vacName2, ctx)
-			Expect(err).To(BeNil())
-
-			err = createPvc(clientset, pvcName, initialSize, storageClassName, vacName1, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupPvc(clientset, pvcName, ctx)
-			fmt.Printf("Made it after creating the PersistentVolumeClaim %s\n", pvcName)
-
-			err = createPod(clientset, podName, pvcName, ctx)
-			Expect(err).To(BeNil())
-			defer cleanupPod(clientset, podName, ctx)
-			fmt.Printf("Made it after creating the Pod %s\n", podName)
-
-			pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, pvcName, 60, ctx)
-			Expect(err).To(BeNil())
-			fmt.Printf("The PV name is %s in zone %s\n", pvName, zoneName)
-
-			diskInfo := DiskInfo{
-				pvName:      pvName,
-				projectName: projectName,
-				zone:        zoneName,
+			testMetadata := TestMetadata{
+				DiskType:          "hyperdisk-extreme",
+				InitialSize:       "64Gi",
+				InitialIops:       &initialIops,
+				InitialThroughput: nil,
+				StorageClassName:  storageClassPrefix + suffix,
+				VacName1:          vac1Prefix + suffix,
+				PvcName:           pvcPrefix + suffix,
+				PodName:           podPrefix + suffix,
 			}
-			iops, _, err := getMetadataFromPV(computeClient, diskInfo, true, false /* getThroughput */, ctx)
-			Expect(strconv.FormatInt(iops, 10)).To(Equal(initialIops))
+			pvName, _, err := createPVWithDynamicProvisioning(clientset, computeClient, storageClient, projectName, testMetadata, ctx)
+			// defer cleanupResources(clientset, storageClient, testMetadata, ctx)
 
-			err = patchPvc(clientset, pvcName, vacName2, ctx)
+			err = patchPvc(clientset, testMetadata.PvcName, vacName2, ctx)
 			Expect(err).To(BeNil())
-			fmt.Printf("The code made it past patching the pv!")
 
-			err = waitForVacUpdate(clientset, pvName, vacName1, ctx)
+			err = waitForVacUpdate(clientset, pvName, testMetadata.VacName1, ctx)
 			Expect(err).ToNot(BeNil())
 
 			currentVacName, err := getVacFromPV(clientset, pvName, ctx)
 			Expect(err).To(BeNil())
-			Expect(currentVacName).To(Equal(vacName1))
+			Expect(currentVacName).To(Equal(testMetadata.VacName1))
 		})
 	})
 })
+
+func createPVWithDynamicProvisioning(
+	clientset *kubernetes.Clientset,
+	computeClient *computev1.DisksClient,
+	storageClient *k8sv1alpha1.StorageV1alpha1Client,
+	projectName string,
+	testMetadata TestMetadata,
+	ctx context.Context,
+) (string, DiskInfo, error) {
+	err := createStorageClass(clientset, testMetadata.StorageClassName, testMetadata.DiskType, testMetadata.InitialIops, testMetadata.InitialThroughput, ctx)
+	if err != nil {
+		return "", DiskInfo{}, err
+	}
+
+	err = createVac(storageClient, testMetadata.VacName1, testMetadata.InitialIops, testMetadata.InitialThroughput, ctx)
+	if err != nil {
+		return "", DiskInfo{}, err
+	}
+
+	err = createPvc(clientset, testMetadata.PvcName, testMetadata.InitialSize, testMetadata.StorageClassName, testMetadata.VacName1, ctx)
+	if err != nil {
+		return "", DiskInfo{}, err
+	}
+
+	err = createPod(clientset, testMetadata.PodName, testMetadata.PvcName, ctx)
+	if err != nil {
+		return "", DiskInfo{}, err
+	}
+
+	pvName, zoneName, err := getPVNameAndZone(clientset, computeClient, projectName, defaultNamespace, testMetadata.PvcName, 60, ctx)
+	if err != nil {
+		return "", DiskInfo{}, err
+	}
+
+	diskInfo := DiskInfo{
+		pvName:      pvName,
+		projectName: projectName,
+		zone:        zoneName,
+	}
+	iops, throughput, err := getMetadataFromPV(computeClient, diskInfo, testMetadata.InitialIops != nil, testMetadata.InitialThroughput != nil, ctx)
+	if err != nil {
+		return "", DiskInfo{}, err
+	}
+
+	if testMetadata.InitialIops != nil && strconv.FormatInt(iops, 10) != *testMetadata.InitialIops {
+		return "", DiskInfo{}, fmt.Errorf("Error: PV IOPS is %s, want = %s", strconv.FormatInt(iops, 10), *testMetadata.InitialIops)
+	}
+
+	if testMetadata.InitialThroughput != nil && strconv.FormatInt(throughput, 10) != *testMetadata.InitialThroughput {
+		return "", DiskInfo{}, fmt.Errorf("Error: PV throughput is %s, want = %s", strconv.FormatInt(throughput, 10), *testMetadata.InitialThroughput)
+	}
+	return pvName, diskInfo, nil
+}
+
+func cleanupResources(clientset *kubernetes.Clientset, storageClient *k8sv1alpha1.StorageV1alpha1Client, testMetadata TestMetadata, ctx context.Context) {
+	cleanupStorageClass(clientset, testMetadata.StorageClassName, ctx)
+	cleanupVac(storageClient, testMetadata.VacName1, ctx)
+	cleanupPvc(clientset, testMetadata.PvcName, ctx)
+	cleanupPod(clientset, testMetadata.PodName, ctx)
+}
 
 func createStorageClass(clientset *kubernetes.Clientset, storageClassName string, diskType string, iops *string, throughput *string, ctx context.Context) error {
 	waitForFirstConsumer := storagev1.VolumeBindingWaitForFirstConsumer
@@ -731,25 +629,27 @@ func getPVNameAndZones(clientset *kubernetes.Clientset, nsName string, pvcName s
 	pvcErr := wait.PollUntilContextCancel(ctx, 5*time.Second, false, func(ctx context.Context) (bool, error) {
 		pvc, err := clientset.CoreV1().PersistentVolumeClaims(nsName).Get(ctx, pvcName, metav1.GetOptions{})
 		if err != nil {
-			return false, err
+			// We want to retry until the code returns a success or times out, so return nil for error to allow retrying
+			fmt.Printf("The error is: %v\n", err)
+			return false, nil
 		}
 		if pvc.Status.Phase != corev1.ClaimBound {
-			return false, fmt.Errorf("PVC %s is not bound yet.", pvcName)
+			return false, nil
 		}
 		if pvc.Spec.VolumeName == "" {
-			return false, fmt.Errorf("Could not get the PV name for the PVC %s.", pvcName)
+			return false, nil
 		}
 		pvName = pvc.Spec.VolumeName
 		return true, nil
 	})
 	if pvcErr != nil {
-		return "", nil, pvcErr
+		return "", nil, fmt.Errorf("Could not get the PV name for the PVC %s.", pvcName)
 	}
 	var zoneNames []string
 	pvErr := wait.PollUntilContextCancel(ctx, 5*time.Second, true, func(ctx context.Context) (bool, error) {
 		pv, err := clientset.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
 		if err != nil {
-			return false, err
+			return false, nil
 		}
 		if pv.Spec.NodeAffinity != nil && pv.Spec.NodeAffinity.Required != nil && pv.Spec.NodeAffinity.Required.NodeSelectorTerms != nil {
 			if len(pv.Spec.NodeAffinity.Required.NodeSelectorTerms) > 0 {
@@ -822,7 +722,7 @@ func patchPvc(clientset *kubernetes.Clientset, pvcName string, vacName string, c
 	return err
 }
 
-func waitUntilUpdate(computeClient *computev1.DisksClient, numMinutes int, diskInfo DiskInfo, initialIops *int64, initialThroughput *int64, ctx context.Context) error {
+func waitUntilUpdate(computeClient *computev1.DisksClient, numMinutes int, diskInfo DiskInfo, initialIops *string, initialThroughput *string, ctx context.Context) error {
 	backoff := wait.Backoff{
 		Duration: 1 * time.Minute,
 		Factor:   1.0,
@@ -834,10 +734,10 @@ func waitUntilUpdate(computeClient *computev1.DisksClient, numMinutes int, diskI
 		if err != nil {
 			return false, err
 		}
-		if initialIops != nil && *initialIops != iops {
+		if initialIops != nil && *initialIops != strconv.FormatInt(iops, 10) {
 			return true, nil
 		}
-		if initialThroughput != nil && *initialThroughput != throughput {
+		if initialThroughput != nil && *initialThroughput != strconv.FormatInt(throughput, 10) {
 			return true, nil
 		}
 		return false, nil
@@ -851,7 +751,7 @@ func waitForVacUpdate(clientset *kubernetes.Clientset, pvName string, vacName st
 	err := wait.PollUntilContextCancel(contextTimeout, 10*time.Second, true, func(ctx context.Context) (bool, error) {
 		pvVacName, err := getVacFromPV(clientset, pvName, ctx)
 		if err != nil {
-			return false, err
+			return false, nil
 		}
 		if pvVacName != "" && pvVacName != vacName {
 			return true, nil
