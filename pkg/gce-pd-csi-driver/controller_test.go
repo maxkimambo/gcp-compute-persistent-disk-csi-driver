@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/util/flowcontrol"
 	"k8s.io/klog/v2"
+	clock "k8s.io/utils/clock/testing"
 	"k8s.io/utils/strings/slices"
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
@@ -4511,12 +4512,12 @@ type backoffDriverConfig struct {
 	mockMissingInstance bool
 	mockMissingDisk     bool
 
-	clock          *testing.FakeClock
+	clock          *clock.FakeClock
 	attachedDisks  []*compute.AttachedDisk
 	readyToExecute chan chan gce.Signal
 }
 
-func newFakeCSIErrorBackoff(tc *testing.FakeClock) *csiErrorBackoff {
+func newFakeCSIErrorBackoff(tc *clock.FakeClock) *csiErrorBackoff {
 	backoff := flowcontrol.NewFakeBackOff(errorBackoffInitialDuration, errorBackoffMaxDuration, tc)
 	return &csiErrorBackoff{backoff, make(map[csiErrorBackoffId]codes.Code)}
 }
@@ -4536,7 +4537,7 @@ func TestControllerUnpublishBackoff(t *testing.T) {
 			if tc.config == nil {
 				tc.config = &backoffDriverConfig{}
 			}
-			tc.config.clock = testing.NewFakeClock(time.Now())
+			tc.config.clock = clock.NewFakeClock(time.Now())
 			tc.config.attachedDisks = []*compute.AttachedDisk{{DeviceName: name}}
 			tc.config.readyToExecute = make(chan chan gce.Signal)
 			driver := backoffDriver(t, tc.config)
@@ -4653,7 +4654,7 @@ func TestControllerUnpublishSucceedsIfNotFound(t *testing.T) {
 		t.Run(desc, func(t *testing.T) {
 			driver := backoffDriver(t, &backoffDriverConfig{
 				mockMissingDisk: true,
-				clock:           testing.NewFakeClock(time.Now()),
+				clock:           clock.NewFakeClock(time.Now()),
 				attachedDisks:   []*compute.AttachedDisk{{DeviceName: name}},
 			})
 
@@ -4687,7 +4688,7 @@ func TestControllerPublishBackoff(t *testing.T) {
 			if tc.config == nil {
 				tc.config = &backoffDriverConfig{}
 			}
-			tc.config.clock = testing.NewFakeClock(time.Now())
+			tc.config.clock = clock.NewFakeClock(time.Now())
 			tc.config.readyToExecute = make(chan chan gce.Signal)
 			driver := backoffDriver(t, tc.config)
 

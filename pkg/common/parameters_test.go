@@ -488,9 +488,11 @@ func TestExtractModifyVolumeParameters(t *testing.T) {
 		"throughput": "500",
 	}
 
+	iops := int64(1000)
+	throughput := int64(500)
 	expected := ModifyVolumeParameters{
-		IOPS:       1000,
-		Throughput: 500,
+		IOPS:       &iops,
+		Throughput: &throughput,
 	}
 
 	result, err := ExtractModifyVolumeParameters(parameters)

@@ -201,23 +201,15 @@ const (
 
 var (
 	validResourceApiVersions = map[string]bool{"v1": true, "alpha": true, "beta": true, "staging_v1": true, "staging_beta": true, "staging_alpha": true}
-	// Disk types that support dynamic IOPS changes
+	// Hyperdisk types that support dynamic IOPS changes
 	diskSupportsIopsChange = map[string]bool{
-		"pd-balanced":          false,
-		"pd-standard":          false,
-		"pd-ssd":               false,
-		"pd-extreme":           false,
 		"hyperdisk-ml":         false,
 		"hyperdisk-balanced":   true,
 		"hyperdisk-throughput": false,
 		"hyperdisk-extreme":    true,
 	}
-	// Disk types that support dynamic throughput changes
+	// Hyperdisk types that support dynamic throughput changes
 	diskSupportsThroughputChange = map[string]bool{
-		"pd-balanced":          false,
-		"pd-standard":          false,
-		"pd-ssd":               false,
-		"pd-extreme":           false,
 		"hyperdisk-ml":         true,
 		"hyperdisk-balanced":   true,
 		"hyperdisk-throughput": true,
@@ -806,6 +798,10 @@ func (gceCS *GCEControllerServer) ControllerModifyVolume(ctx context.Context, re
 	}
 	diskType = existingDisk.GetPDType()
 
+	// Check if the disk is a hyperdisk (supports dynamic provisioning)
+	if _, valid := diskSupportsIopsChange[diskType]; !valid {
+		return nil, status.Errorf(codes.InvalidArgument, "Failed to modify volume: modifications not supported for disk type %s", diskType)
+	}
 	supportsIopsChange := diskSupportsIopsChange[diskType]
 	supportsThroughputChange := diskSupportsThroughputChange[diskType]
 	if !supportsIopsChange && !supportsThroughputChange {
