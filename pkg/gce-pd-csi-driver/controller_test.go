@@ -1719,7 +1719,8 @@ func TestCreateVolumeWithVolumeAttributeClassParameters(t *testing.T) {
 		req           *csi.CreateVolumeRequest
 		expIops       int64
 		expThroughput int64
-		expError      string
+		wantErr       bool
+		expErrCode    codes.Code
 	}{
 		{
 			name: "Volume attribute class parameters should take precedence over storage class parameters",
@@ -1752,7 +1753,7 @@ func TestCreateVolumeWithVolumeAttributeClassParameters(t *testing.T) {
 			},
 			expIops:       20000,
 			expThroughput: 600,
-			expError:      "",
+			wantErr:       false,
 		},
 		{
 			name: "Volume attribute class parameters should be ignored for incompatible disk types",
@@ -1770,9 +1771,9 @@ func TestCreateVolumeWithVolumeAttributeClassParameters(t *testing.T) {
 					},
 				},
 				Parameters: map[string]string{
-					common.ParameterKeyType: "pd-ssd",
-					// common.ParameterKeyProvisionedIOPSOnCreate:       "10000",
-					// common.ParameterKeyProvisionedThroughputOnCreate: "500",
+					common.ParameterKeyType:                          "pd-ssd",
+					common.ParameterKeyProvisionedIOPSOnCreate:       "10000",
+					common.ParameterKeyProvisionedThroughputOnCreate: "500",
 				},
 				AccessibilityRequirements: &csi.TopologyRequirement{
 					Preferred: []*csi.Topology{
@@ -1785,7 +1786,8 @@ func TestCreateVolumeWithVolumeAttributeClassParameters(t *testing.T) {
 			},
 			expIops:       0,
 			expThroughput: 0,
-			expError:      "",
+			wantErr:       true,
+			expErrCode:    codes.InvalidArgument,
 		},
 	}
 
@@ -1801,6 +1803,12 @@ func TestCreateVolumeWithVolumeAttributeClassParameters(t *testing.T) {
 		createVolReq := tc.req
 
 		resp, err := gceDriver.cs.CreateVolume(context.Background(), createVolReq)
+		if tc.wantErr {
+			if status.Code(err) != tc.expErrCode {
+				t.Fatalf("Expected error code: %v, got: %v. err : %v", tc.expErrCode, status.Code(err), err)
+			}
+			continue
+		}
 		if err != nil {
 			t.Fatalf("Failed to create volume: %v", err)
 		}

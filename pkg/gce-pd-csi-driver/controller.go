@@ -203,6 +203,7 @@ var (
 	validResourceApiVersions = map[string]bool{"v1": true, "alpha": true, "beta": true, "staging_v1": true, "staging_beta": true, "staging_alpha": true}
 	// Hyperdisk types that support dynamic IOPS changes
 	diskSupportsIopsChange = map[string]bool{
+		"pd-extreme":           false,
 		"hyperdisk-ml":         false,
 		"hyperdisk-balanced":   true,
 		"hyperdisk-throughput": false,
@@ -210,6 +211,7 @@ var (
 	}
 	// Hyperdisk types that support dynamic throughput changes
 	diskSupportsThroughputChange = map[string]bool{
+		"pd-extreme":           false,
 		"hyperdisk-ml":         true,
 		"hyperdisk-balanced":   true,
 		"hyperdisk-throughput": true,
@@ -346,6 +348,9 @@ func (gceCS *GCEControllerServer) createVolumeInternal(ctx context.Context, req 
 	mutableParams := req.GetMutableParameters()
 	// If the disk type is pd-balanced, pd-ssd, pd-standard except for pd-extreme,
 	// the IOPS and Throughput parameters are ignored.
+	if _, valid := diskSupportsIopsChange[params.DiskType]; !valid {
+		return nil, status.Errorf(codes.InvalidArgument, "Disk type %s does not support VolumeAttributesClass", params.DiskType)
+	}
 	supportsIopsChange := diskSupportsIopsChange[params.DiskType]
 	supportsThroughputChange := diskSupportsThroughputChange[params.DiskType]
 	if (supportsIopsChange || supportsThroughputChange) && len(mutableParams) > 0 {
