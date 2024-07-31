@@ -101,11 +101,9 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-		kubeConfigPath = os.Getenv("KUBECONFIG")
-		// If $KUBECONFIG is not set, we take the config from ~/.kube/config
-		if kubeConfigPath == "" {
-			kubeConfigPath = os.Getenv("HOME") + "/.kube/config"
-		}
+		var err error
+		kubeConfigPath, err = getKubeConfig()
+		Expect(err).To(BeNil())
 
 		projectName = os.Getenv("PROJECT")
 		Expect(projectName).ToNot(Equal(""))
@@ -115,6 +113,7 @@ var _ = Describe("ControllerModifyVolume tests", func() {
 
 		// Setup clients
 		config, err := clientcmd.BuildConfigFromFlags("", kubeConfigPath)
+		Expect(err).To(BeNil())
 		clientset, err = kubernetes.NewForConfig(config)
 		Expect(err).To(BeNil())
 
